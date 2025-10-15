@@ -1,0 +1,20 @@
+{
+  "nagents": 5,
+  "capacity": 200,
+  "learningrate": 0.01,
+  "momentum": 0.005,
+  "eps_max": 0.8,
+  "eps_min": 0.0,
+  "eps_decay": 50,
+  "eps_increment": 0.05,
+  "batch_size": 16,
+  "gamma": 0.9,
+  "nepisodes": 5,
+  "nsteps": 50,
+  "nupdate": 20,
+  "cuda": 0,
+  "enable_plot": true,
+  "plot_interval": 1,
+  "plot_smooth_window": 20,
+  "plot_x_axis": "steps"
+}
