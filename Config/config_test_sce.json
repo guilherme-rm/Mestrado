@@ -1,4 +1,5 @@
 {
+  "//": "Configuration for Environment Scenario (sce.json)",
   "nMBS": 1,
   "nPBS": 0,
   "nFBS": 0,
@@ -8,9 +9,11 @@
   "BW": 180000,
   "nChannel": 4,
   "N0": -174,
-  "profit": 0.5,
+  "QoS_thr": 2,
+
+  "//_REWARDS": "",
+  "profit": 1.0,
   "power_cost": 0.0005,
   "action_cost": 0.001,
-  "negative_cost": -1.0,
-  "QoS_thr": 2
+  "negative_cost": -0.5
 }

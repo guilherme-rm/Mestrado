@@ -1,20 +1,35 @@
 {
+  "//": "Configuration for RL Optimization (opt.json)",
   "nagents": 5,
-  "capacity": 200,
-  "learningrate": 0.01,
-  "momentum": 0.005,
-  "eps_max": 0.8,
-  "eps_min": 0.0,
-  "eps_decay": 50,
-  "eps_increment": 0.05,
-  "batch_size": 16,
-  "gamma": 0.9,
-  "nepisodes": 5,
-  "nsteps": 50,
-  "nupdate": 20,
+  
+  "//_RL_HYPERPARAMETERS": "",
+  "learning_rate": 0.0005,
+  "gamma": 0.99,
+  "batch_size": 128,
+  "tau": 0.005,
+
+  "//_REPLAY_MEMORY": "",
+  "capacity": 50000,
+  "min_memory_for_learning": 2000,
+
+  "//_EXPLORATION": "",
+  "eps_start": 1.0,
+  "eps_end": 0.05,
+  "eps_decay_steps": 500000,
+
+  "//_TRAINING_DURATION": "",
+  "nepisodes": 50000,
+  "nsteps": 100,
+
+  "//_MISC": "",
+  "early_termination": true,
   "cuda": 0,
+
+  "//_LOGGING_PLOTTING": "",
   "enable_plot": true,
-  "plot_interval": 1,
-  "plot_smooth_window": 20,
-  "plot_x_axis": "steps"
+  "plot_interval": 5,
+  "plot_smooth_window": 50,
+  "plot_x_axis": "episodes",
+  "checkpoint_interval": 100,
+  "step_log_throttle": 10
 }

@@ -8,30 +8,38 @@ from torch.nn import functional as F
 
 class DNN(nn.Module):
     """Simple feedforward DQN backbone.
-
-    Hidden sizes are fixed for now but can be parameterized.
+    Input: Global state vector (size: nagents).
+    Output: Q-values for all actions (size: BS_Number * nChannel).
     """
 
-    def __init__(self, opt, sce, scenario):  # Testar com Kernel Gaussiano -> Camada Linear
+    def __init__(self, opt, sce, scenario):
         super().__init__()
-        self.input_layer = nn.Linear(opt.nagents, 64)
-        self.middle1_layer = nn.Linear(64, 32)
-        self.middle2_layer = nn.Linear(32, 32)
-        self.output_layer = nn.Linear(32, scenario.BS_Number() * sce.nChannel)
+        input_dim = opt.nagents
+        output_dim = scenario.BS_Number() * sce.nChannel
+
+        # Increased network capacity for better representation learning
+        self.layer1 = nn.Linear(input_dim, 128)
+        self.layer2 = nn.Linear(128, 128)
+        self.layer3 = nn.Linear(128, 64)
+        self.output_layer = nn.Linear(64, output_dim)
+        
         self.apply(self._init_weights)
 
     @staticmethod
     def _init_weights(m):
+        # Xavier initialization for stability
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, state: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
-        x1 = F.relu(self.input_layer(state))
-        x2 = F.relu(self.middle1_layer(x1))
-        x3 = F.relu(self.middle2_layer(x2))
-        return self.output_layer(x3)
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        # Ensure input tensor is float32 for compatibility with linear layers
+        x = state.to(torch.float32)
+        x = F.relu(self.layer1(x))
+        x = F.relu(self.layer2(x))
+        x = F.relu(self.layer3(x))
+        return self.output_layer(x)
 
 
 __all__ = ["DNN"]

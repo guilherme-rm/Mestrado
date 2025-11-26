@@ -1,10 +1,8 @@
-"""Training utilities for the RL agents.
-
-This consolidates helpers previously in the monolithic `functions.py` into
-the RL package namespace.
-"""
+"""Training utilities for the RL agents."""
 from __future__ import annotations
 
+# Import math for exponential decay
+import math
 from dataclasses import dataclass
 from typing import Sequence, List
 
@@ -22,25 +20,27 @@ class TrainingContext:
     qos: torch.Tensor
 
 
+# Updated compute_epsilon for standard exponential decay based on total steps
+def compute_epsilon(opt, total_steps: int) -> float:
+    """Computes epsilon using exponential decay based on total training steps."""
+    # Use getattr for robustness if config keys change names
+    eps_start = getattr(opt, 'eps_start', 1.0)
+    eps_end = getattr(opt, 'eps_end', 0.05)
+    eps_decay_steps = getattr(opt, 'eps_decay_steps', 10000)
 
-class EpsilonScheduler:
-    def __init__(self, opt):
-        self.opt = opt
+    if eps_decay_steps <= 0:
+        return eps_end
 
-    def value(self, episode_idx: int, step_idx: int) -> float:
-        return compute_epsilon(self.opt, episode_idx, step_idx)
-
-
-def compute_epsilon(opt, episode_idx: int, step_idx: int) -> float:
-    lin = opt.eps_min + opt.eps_increment * step_idx * (episode_idx + 1)
-    return min(lin, opt.eps_max)
+    # Exponential decay formula
+    epsilon = eps_end + (eps_start - eps_end) * \
+        math.exp(-1. * total_steps / eps_decay_steps)
+    return epsilon
 
 
 def select_actions(agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float) -> torch.Tensor:
-    # Each agent currently returns an action tensor shaped (1,1); we want a flat (nagents,) long tensor.
     raw = [ag.Select_Action(state, scenario, eps) for ag in agents]
     stacked = torch.stack(raw)  # shape (nagents,1,1)
-    return stacked.view(len(agents))  # safe reshape without dropping nagents when =1
+    return stacked.view(len(agents))
 
 
 def compute_rewards_and_next_state(agents: Sequence[Agent], actions: torch.Tensor, state: torch.Tensor, scenario):
@@ -54,6 +54,7 @@ def compute_rewards_and_next_state(agents: Sequence[Agent], actions: torch.Tenso
         qos[i] = qos_i
         rewards[i] = reward_i
         capacity[i] = cap_i
+        # State representation is the QoS satisfaction of the previous step
         next_state[i] = qos_i
     return rewards, qos, next_state, capacity
 
@@ -65,14 +66,21 @@ def store_and_learn(
     next_state: torch.Tensor,
     rewards: torch.Tensor,
     scenario,
-    step_idx: int,
+    step_idx: int, # Kept for compatibility but unused
     opt,
 ):
+    # Get tau for soft update (defaulting to 0.005 if not set)
+    tau = getattr(opt, 'tau', 0.005)
+    
     for i, ag in enumerate(agents):
+        # 1. Store transition
         ag.Save_Transition(state, actions[i], next_state, rewards[i], scenario)
+        
+        # 2. Optimize policy network
         ag.Optimize_Model()
-        if step_idx % opt.nupdate == 0:
-            ag.Target_Update()
+        
+        # 3. Use Soft Target Update at every step for stable learning
+        ag.Soft_Target_Update(tau=tau)
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
@@ -95,8 +103,6 @@ def create_agents(opt, sce, scenario, device) -> List[Agent]:
 
 __all__ = [
     "TrainingContext",
-    # EpisodeLogger removed; use functions.logging.EpisodeMetricsLogger instead
-    "EpsilonScheduler",
     "compute_epsilon",
     "select_actions",
     "compute_rewards_and_next_state",
