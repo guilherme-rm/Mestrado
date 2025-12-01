@@ -1,4 +1,5 @@
 """Training utilities for the RL agents."""
+
 from __future__ import annotations
 
 # Import math for exponential decay
@@ -19,31 +20,17 @@ class TrainingContext:
     rewards: torch.Tensor
     qos: torch.Tensor
 
-
-# Updated compute_epsilon for standard exponential decay based on total steps
-def compute_epsilon(opt, total_steps: int) -> float:
-    """Computes epsilon using exponential decay based on total training steps."""
-    # Use getattr for robustness if config keys change names
-    eps_start = getattr(opt, 'eps_start', 1.0)
-    eps_end = getattr(opt, 'eps_end', 0.05)
-    eps_decay_steps = getattr(opt, 'eps_decay_steps', 10000)
-
-    if eps_decay_steps <= 0:
-        return eps_end
-
-    # Exponential decay formula
-    epsilon = eps_end + (eps_start - eps_end) * \
-        math.exp(-1. * total_steps / eps_decay_steps)
-    return epsilon
-
-
-def select_actions(agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float) -> torch.Tensor:
+def select_actions(
+    agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float
+) -> torch.Tensor:
     raw = [ag.Select_Action(state, scenario, eps) for ag in agents]
     stacked = torch.stack(raw)  # shape (nagents,1,1)
     return stacked.view(len(agents))
 
 
-def compute_rewards_and_next_state(agents: Sequence[Agent], actions: torch.Tensor, state: torch.Tensor, scenario):
+def compute_rewards_and_next_state(
+    agents: Sequence[Agent], actions: torch.Tensor, state: torch.Tensor, scenario
+):
     nagents = len(agents)
     rewards = torch.zeros(nagents, device=state.device)
     qos = torch.zeros(nagents, device=state.device)
@@ -66,19 +53,19 @@ def store_and_learn(
     next_state: torch.Tensor,
     rewards: torch.Tensor,
     scenario,
-    step_idx: int, # Kept for compatibility but unused
+    step_idx: int,  # Kept for compatibility but unused
     opt,
 ):
     # Get tau for soft update (defaulting to 0.005 if not set)
-    tau = getattr(opt, 'tau', 0.005)
-    
+    tau = getattr(opt, "tau", 0.005)
+
     for i, ag in enumerate(agents):
         # 1. Store transition
         ag.Save_Transition(state, actions[i], next_state, rewards[i], scenario)
-        
+
         # 2. Optimize policy network
         ag.Optimize_Model()
-        
+
         # 3. Use Soft Target Update at every step for stable learning
         ag.Soft_Target_Update(tau=tau)
 
@@ -98,12 +85,13 @@ def should_terminate(state: torch.Tensor, target_state: torch.Tensor) -> bool:
 
 
 def create_agents(opt, sce, scenario, device) -> List[Agent]:
-    return [Agent(opt, sce, scenario, index=i, device=device) for i in range(opt.nagents)]
+    return [
+        Agent(opt, sce, scenario, index=i, device=device) for i in range(opt.nagents)
+    ]
 
 
 __all__ = [
     "TrainingContext",
-    "compute_epsilon",
     "select_actions",
     "compute_rewards_and_next_state",
     "store_and_learn",

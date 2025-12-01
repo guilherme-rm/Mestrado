@@ -1,11 +1,12 @@
 """Replay memory utilities."""
+
 from __future__ import annotations
 
 # Use deque for efficient memory management
 from collections import namedtuple, deque
 from random import sample
 
-Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
+Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
 
 
 class ReplayMemory:

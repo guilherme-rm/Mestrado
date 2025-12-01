@@ -1,4 +1,64 @@
+# Results and outputs
 Result/
-__pycache__/
+results/
+outputs/
+logs/
+checkpoints/
+
+# Python cache - this single pattern catches all __pycache__ directories
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*.ipynb
 test.ipynb
+
+# Test configs
 test_configs/
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# PyTorch / ML artifacts
+*.pt
+*.pth
+*.ckpt
+wandb/
+runs/
+tensorboard/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Coverage and testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# mypy
+.mypy_cache/

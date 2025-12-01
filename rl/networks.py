@@ -1,4 +1,5 @@
 """Neural network architectures for agents."""
+
 from __future__ import annotations
 
 import torch
@@ -22,7 +23,7 @@ class DNN(nn.Module):
         self.layer2 = nn.Linear(128, 128)
         self.layer3 = nn.Linear(128, 64)
         self.output_layer = nn.Linear(64, output_dim)
-        
+
         self.apply(self._init_weights)
 
     @staticmethod

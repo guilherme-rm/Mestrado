@@ -1,4 +1,5 @@
 """Base station entity and radio related utilities."""
+
 from __future__ import annotations
 
 import numpy as np

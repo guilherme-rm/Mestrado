@@ -5,15 +5,17 @@ from telecom.base_station import BS
 
 
 def make_sce():
-    return DotDic({
-        'nMBS': 1,
-        'nPBS': 1,
-        'nFBS': 1,
-        'nChannel': 2,
-        'rMBS': 500,
-        'rPBS': 250,
-        'rFBS': 50,
-    })
+    return DotDic(
+        {
+            "nMBS": 1,
+            "nPBS": 1,
+            "nFBS": 1,
+            "nChannel": 2,
+            "rMBS": 500,
+            "rPBS": 250,
+            "rFBS": 50,
+        }
+    )
 
 
 def test_scenario_counts():
@@ -28,13 +30,13 @@ def test_scenario_counts():
 
 def test_bs_receive_power_inside_radius():
     sce = make_sce()
-    bs = BS(sce, 0, 'MBS', [0, 0], sce.rMBS)
+    bs = BS(sce, 0, "MBS", [0, 0], sce.rMBS)
     p = bs.receive_power(100)
     assert p > 0
 
 
 def test_bs_receive_power_outside_radius():
     sce = make_sce()
-    bs = BS(sce, 0, 'MBS', [0, 0], 10.0)
+    bs = BS(sce, 0, "MBS", [0, 0], 10.0)
     p = bs.receive_power(50.0)
     assert p == 0.0

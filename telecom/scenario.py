@@ -1,13 +1,58 @@
 """Scenario definition containing base station placement and geometry."""
+
 from __future__ import annotations
 
 import numpy as np
 from numpy import pi
 from random import random, uniform, choice
-from typing import List
+from typing import List, Tuple
+
+from dataclasses import dataclass
 
 from .base_station import BS
 
+@dataclass
+class ScenarioConfig:
+    """Typed configuration for scenario parameters."""
+    nMBS: int
+    nPBS: int
+    nFBS: int
+    rMBS: float
+    rPBS: float
+    rFBS: float
+    BW: float
+    nChannel: int
+    N0: float
+    QoS_thr: float
+    profit: float = 1.0
+    power_cost: float = 0.0005
+    action_cost: float = 0.001
+    negative_cost: float = -0.5
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScenarioConfig":
+        """Create config from dictionary (e.g., loaded JSON)."""
+        return cls(
+            nMBS=d["nMBS"],
+            nPBS=d["nPBS"],
+            nFBS=d["nFBS"],
+            rMBS=d["rMBS"],
+            rPBS=d["rPBS"],
+            rFBS=d["rFBS"],
+            BW=d["BW"],
+            nChannel=d["nChannel"],
+            N0=d["N0"],
+            QoS_thr=d["QoS_thr"],
+            profit=d.get("profit", 1.0),
+            power_cost=d.get("power_cost", 0.0005),
+            action_cost=d.get("action_cost", 0.001),
+            negative_cost=d.get("negative_cost", -0.5),
+        )
+    
+    @property
+    def total_bs(self) -> int:
+        """Total number of base stations."""
+        return self.nMBS + self.nPBS + self.nFBS
 
 class Scenario:
     """Defines the network scenario (layout + base stations)."""

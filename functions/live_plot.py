@@ -1,4 +1,5 @@
 """Real-time training plot utilities."""
+
 from __future__ import annotations
 
 import os
@@ -7,6 +8,7 @@ from typing import List, Dict, Optional
 # Lazy import matplotlib; handle absence gracefully
 try:
     import matplotlib
+
     matplotlib.use("Agg")  # Force non-interactive backend
     import matplotlib.pyplot as plt
 except Exception:
@@ -14,18 +16,27 @@ except Exception:
 
 
 class RealTimeStepPlotter:
-    def __init__(self, enabled: bool = True, plot_interval: int = 50, out_path: str = "Result/training_progress.png", smooth_window: int = 100, x_axis_mode: str = "steps"):
+    def __init__(
+        self,
+        enabled: bool = True,
+        plot_interval: int = 50,
+        out_path: str = "Result/training_progress.png",
+        smooth_window: int = 100,
+        x_axis_mode: str = "steps",
+    ):
         self.enabled = enabled and plt is not None
         self.plot_interval = max(1, int(plot_interval))
         self.out_path = out_path
         self.smooth_window = max(1, int(smooth_window))
-        self.x_axis_mode = x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
+        self.x_axis_mode = (
+            x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
+        )
 
         self.history: Dict[str, List[float]] = {
             "step": [],
             "epsilon": [],
             "mean_reward": [],
-            "return": [], # Added return tracking
+            "return": [],  # Added return tracking
             "qos": [],
             "capacity_sum_mbps": [],
         }
@@ -34,7 +45,15 @@ class RealTimeStepPlotter:
             os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
 
     # Updated signature to accept optional episode_return
-    def update(self, step: int, epsilon: float, mean_reward: float, qos: float, capacity_sum_mbps: float | None = None, episode_return: float | None = None):
+    def update(
+        self,
+        step: int,
+        epsilon: float,
+        mean_reward: float,
+        qos: float,
+        capacity_sum_mbps: float | None = None,
+        episode_return: float | None = None,
+    ):
         if not self.enabled:
             return
         self.history["step"].append(step)
@@ -78,10 +97,11 @@ class RealTimeStepPlotter:
     def _render(self):
         if plt is None:
             return
-        
+
         # Prepare data
         step = self.history["step"]
-        if not step: return
+        if not step:
+            return
 
         eps = self.history["epsilon"]
         rew = self.history["mean_reward"]
@@ -103,7 +123,12 @@ class RealTimeStepPlotter:
         # Plot 1: Average Reward
         ax = axes[0][0]
         ax.plot(step, rew, alpha=0.3, label="Avg Reward")
-        ax.plot(step, rew_ma, label=f"Avg Reward MA (w={self.smooth_window})", color="tab:green")
+        ax.plot(
+            step,
+            rew_ma,
+            label=f"Avg Reward MA (w={self.smooth_window})",
+            color="tab:green",
+        )
         ax.set_title("Average Reward")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Reward")
@@ -113,18 +138,22 @@ class RealTimeStepPlotter:
         # Plot 2: QoS Satisfaction
         ax = axes[0][1]
         ax.plot(step, qos, alpha=0.3, color="tab:purple", label="QoS Rate")
-        ax.plot(step, qos_ma, color="tab:purple", label=f"QoS MA (w={self.smooth_window})")
+        ax.plot(
+            step, qos_ma, color="tab:purple", label=f"QoS MA (w={self.smooth_window})"
+        )
         ax.set_title("QoS Satisfaction (Mean)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("QoS Rate")
-        ax.set_ylim(-0.05, 1.05) # QoS rate is bounded [0, 1]
+        ax.set_ylim(-0.05, 1.05)  # QoS rate is bounded [0, 1]
         ax.legend()
         ax.grid(alpha=0.3)
 
         # Plot 3: Return (New Plot)
         ax = axes[0][2]
         ax.plot(step, ret, alpha=0.3, label="Return")
-        ax.plot(step, ret_ma, label=f"Return MA (w={self.smooth_window})", color="tab:red")
+        ax.plot(
+            step, ret_ma, label=f"Return MA (w={self.smooth_window})", color="tab:red"
+        )
         ax.set_title("Episode Return (Cumulative Reward)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Return")
@@ -142,7 +171,12 @@ class RealTimeStepPlotter:
         # Plot 5: System Capacity
         ax = axes[1][1]
         ax.plot(step, cap, alpha=0.3, label="Capacity Sum (Mbps)", color="tab:cyan")
-        ax.plot(step, cap_ma, label=f"Capacity MA (w={self.smooth_window})", color="tab:blue")
+        ax.plot(
+            step,
+            cap_ma,
+            label=f"Capacity MA (w={self.smooth_window})",
+            color="tab:blue",
+        )
         ax.set_title("System Capacity (Mbps)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Capacity (Mbps)")
@@ -163,8 +197,8 @@ class RealTimeStepPlotter:
         except Exception as e:
             print(f"Warning: Failed to save plot: {e}")
 
-
     def close(self):
         pass
+
 
 __all__ = ["RealTimeStepPlotter"]

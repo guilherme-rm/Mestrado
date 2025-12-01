@@ -23,6 +23,7 @@ Metrics captured:
 
 You can extend by adding loss, memory usage, etc. Provide them in update().
 """
+
 from __future__ import annotations
 
 import os
@@ -31,6 +32,7 @@ from typing import List, Dict, Optional
 # Lazy import matplotlib; handle absence gracefully
 try:
     import matplotlib
+
     matplotlib.use("Agg")  # Force non-interactive backend
     import matplotlib.pyplot as plt
 except Exception:  # pragma: no cover - if matplotlib not present
@@ -38,12 +40,21 @@ except Exception:  # pragma: no cover - if matplotlib not present
 
 
 class RealTimeStepPlotter:
-    def __init__(self, enabled: bool = True, plot_interval: int = 50, out_path: str = "Result/training_progress.png", smooth_window: int = 100, x_axis_mode: str = "steps"):
+    def __init__(
+        self,
+        enabled: bool = True,
+        plot_interval: int = 50,
+        out_path: str = "Result/training_progress.png",
+        smooth_window: int = 100,
+        x_axis_mode: str = "steps",
+    ):
         self.enabled = enabled and plt is not None
         self.plot_interval = max(1, int(plot_interval))
         self.out_path = out_path
         self.smooth_window = max(1, int(smooth_window))
-        self.x_axis_mode = x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
+        self.x_axis_mode = (
+            x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
+        )
 
         self.history: Dict[str, List[float]] = {
             "step": [],
@@ -56,7 +67,14 @@ class RealTimeStepPlotter:
         if self.enabled:
             os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
 
-    def update(self, step: int, epsilon: float, mean_reward: float, qos: float, capacity_sum_mbps: float | None = None):
+    def update(
+        self,
+        step: int,
+        epsilon: float,
+        mean_reward: float,
+        qos: float,
+        capacity_sum_mbps: float | None = None,
+    ):
         if not self.enabled:
             return
         self.history["step"].append(step)
@@ -67,7 +85,11 @@ class RealTimeStepPlotter:
             self.history["capacity_sum_mbps"].append(capacity_sum_mbps)
         else:
             # Maintain alignment for indexing; repeat last or 0
-            last = self.history["capacity_sum_mbps"][-1] if self.history["capacity_sum_mbps"] else 0.0
+            last = (
+                self.history["capacity_sum_mbps"][-1]
+                if self.history["capacity_sum_mbps"]
+                else 0.0
+            )
             self.history["capacity_sum_mbps"].append(last)
 
         # For episodes mode we still throttle by plot_interval but 'step' is semantic x-value
@@ -106,7 +128,9 @@ class RealTimeStepPlotter:
 
         ax = axes[0][0]
         ax.plot(step, rew, alpha=0.3, label="reward")
-        ax.plot(step, rew_ma, label=f"reward MA (w={self.smooth_window})", color="tab:green")
+        ax.plot(
+            step, rew_ma, label=f"reward MA (w={self.smooth_window})", color="tab:green"
+        )
         ax.set_title("Mean Reward per Step")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Reward")
@@ -129,7 +153,12 @@ class RealTimeStepPlotter:
 
         ax = axes[1][1]
         ax.plot(step, cap, alpha=0.3, label="capacity sum (Mbps)", color="tab:cyan")
-        ax.plot(step, cap_ma, label=f"capacity MA (w={self.smooth_window})", color="tab:blue")
+        ax.plot(
+            step,
+            cap_ma,
+            label=f"capacity MA (w={self.smooth_window})",
+            color="tab:blue",
+        )
         ax.set_title("System Capacity (Mbps)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("Capacity (Mbps)")

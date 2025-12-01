@@ -7,19 +7,23 @@ from telecom.scenario import Scenario
 
 
 def make_opts():
-    opt = DotDic({
-        'nagents': 3,
-        'capacity': 10,
-    })
-    sce = DotDic({
-        'nMBS': 1,
-        'nPBS': 0,
-        'nFBS': 0,
-        'nChannel': 2,
-        'rMBS': 100,
-        'rPBS': 50,
-        'rFBS': 20,
-    })
+    opt = DotDic(
+        {
+            "nagents": 3,
+            "capacity": 10,
+        }
+    )
+    sce = DotDic(
+        {
+            "nMBS": 1,
+            "nPBS": 0,
+            "nFBS": 0,
+            "nChannel": 2,
+            "rMBS": 100,
+            "rPBS": 50,
+            "rFBS": 20,
+        }
+    )
     return opt, sce
 
 
