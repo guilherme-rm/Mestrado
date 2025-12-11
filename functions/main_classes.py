@@ -65,10 +65,11 @@ class TrainingConfig:
 class EpsilonScheduler:
     """Handles epsilon decay for exploration."""
     
-    def __init__(self, eps_start, eps_end, eps_decay_steps):
+    def __init__(self, eps_start, eps_end, eps_decay_steps, nepisodes):
         self.eps_start = eps_start
         self.eps_end = eps_end
         self.eps_decay_steps = eps_decay_steps
+        self.nepisodes = nepisodes
     
     def get_epsilon(self, current_step: int) -> float:
         """Compute epsilon using exponential decay based on current step."""
@@ -87,6 +88,7 @@ class EpsilonScheduler:
             eps_start=getattr(opt, "eps_start", 1.0),
             eps_end=getattr(opt, "eps_end", 0.05),
             eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
+            nepisodes = getattr(opt, "nepisodes", 1000)
         )
 
 
@@ -439,7 +441,6 @@ class ExperimentManager:
         self.sce = sce
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # Initialized during setup
         self.scenario = None
         self.run_dir = None
         self.agents = None

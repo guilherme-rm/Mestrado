@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 from typing import List, Dict, Optional
 
-# Lazy import matplotlib; handle absence gracefully
 try:
     import matplotlib
 
-    matplotlib.use("Agg")  # Force non-interactive backend
+    matplotlib.use("Agg") 
     import matplotlib.pyplot as plt
 except Exception:
     plt = None

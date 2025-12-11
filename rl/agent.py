@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from random import random, uniform, choice, randrange
-from typing import Sequence, Tuple
+from typing import Tuple
 
 import numpy as np
 from numpy import pi
@@ -11,7 +11,6 @@ import torch
 
 # Import Adam optimizer
 from torch import optim
-import torch.nn as nn
 from torch.nn import functional as F
 
 from .memory import ReplayMemory, Transition
