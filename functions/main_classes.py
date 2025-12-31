@@ -2,7 +2,8 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Protocol
+
 
 import torch
 
@@ -15,7 +16,8 @@ from rl.training import (
     initialize_episode,
     should_terminate,
 )
-from functions.live_plot import RealTimeStepPlotter
+from rl.metrics import NetworkMetrics
+from functions.live_plot import RealTimeStepPlotter, NetworkMetricsPlotter
 from functions.logging import (
     RunDirectoryManager,
     save_config,
@@ -34,7 +36,7 @@ class TrainingConfig:
     nsteps: int
     nagents: int
     enable_plot: bool = True
-    plot_interval: int = 10
+    plot_interval: int = 50000
     plot_smooth_window: int = 50
     plot_x_axis: str = "episodes"
     early_termination: bool = True
@@ -43,7 +45,6 @@ class TrainingConfig:
     # Epsilon schedule
     eps_start: float = 1.0
     eps_end: float = 0.01
-    eps_decay: float = 0.995
     
     @classmethod
     def from_opt(cls, opt) -> "TrainingConfig":
@@ -53,7 +54,7 @@ class TrainingConfig:
             nsteps=opt.nsteps,
             nagents=opt.nagents,
             enable_plot=getattr(opt, "enable_plot", True),
-            plot_interval=getattr(opt, "plot_interval", 10),
+            plot_interval=getattr(opt, "plot_interval", 100),
             plot_smooth_window=getattr(opt, "plot_smooth_window", 50),
             plot_x_axis=getattr(opt, "plot_x_axis", "episodes"),
             early_termination=getattr(opt, "early_termination", True),
@@ -62,6 +63,8 @@ class TrainingConfig:
         )
 
 
+class EpsilonPolicy(Protocol):
+    def get_epsilon(self, *, total_steps: int, step_in_episode: int, episode: int) -> float: ...
 class EpsilonScheduler:
     """Handles epsilon decay for exploration."""
     
@@ -90,7 +93,50 @@ class EpsilonScheduler:
             eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
             nepisodes = getattr(opt, "nepisodes", 1000)
         )
+    
+@dataclass
+class LinearIncreasingEpsilonScheduler:
+    eps_min: float
+    eps_increment: float
+    eps_max: float
 
+    def get_epsilon(self, *, step_in_episode: int, episode: int) -> float:
+        eps = self.eps_min + self.eps_increment * float(step_in_episode) * float(episode + 1)
+        if eps > self.eps_max:
+            eps = self.eps_max
+        return float(eps)
+
+    @classmethod
+    def from_opt(cls, opt) -> "LinearIncreasingEpsilonScheduler":
+        return cls(
+            eps_min=float(getattr(opt, "eps_min", 0.05)),
+            eps_increment=float(getattr(opt, "eps_increment", 0.02)),
+            eps_max=float(getattr(opt, "eps_max", 0.8)),
+        )
+    
+class EpsilonPolicyFactory:
+    @staticmethod
+    def from_opt(opt) -> EpsilonPolicy:
+        policy = getattr(opt, "epsilon_policy", "exp_decay")
+        if policy == "exp_decay":
+            scheduler = EpsilonScheduler.from_opt(opt)
+
+            class _Adapter:
+                def get_epsilon(self, *, total_step: int, step_in_episode: int, episode: int) -> float:
+                    return scheduler.get_epsilon(total_step)
+
+            return _Adapter()
+
+        if policy == "linear_increasing":
+            scheduler = LinearIncreasingEpsilonScheduler.from_opt(opt)
+
+            class _Adapter:
+                def get_epsilon(self, *, total_step: int, step_in_episode: int, episode: int) -> float:
+                    return scheduler.get_epsilon(step_in_episode=step_in_episode, episode=episode)
+
+            return _Adapter()
+
+        raise ValueError(f"Unknown opt.epsilon_policy={policy!r}. Expected 'exp_decay' or 'linear_increasing'.")
 
 @dataclass
 class EpisodeMetrics:
@@ -226,9 +272,9 @@ class EpisodeRunner:
         
         return step_metrics
     
-    def learn(self, opt):
+    def learn(self, opt) -> Optional[NetworkMetrics]:
         """Store experience and update networks."""
-        store_and_learn(
+        network_metrics = store_and_learn(
             self.agents,
             self.ctx.state,
             self.ctx.actions,
@@ -238,6 +284,8 @@ class EpisodeRunner:
             self.step,
             opt,
         )
+
+        return network_metrics
     
     def advance(self):
         """Transition to next state."""
@@ -273,7 +321,7 @@ class Trainer:
         agents: List,
         scenario: Scenario,
         config: TrainingConfig,
-        opt: Any,  # Original opt for store_and_learn compatibility
+        opt: Any,  
         run_dir: RunDirectoryManager,
         device: torch.device,
     ):
@@ -285,12 +333,13 @@ class Trainer:
         self.device = device
         
         # Components
-        self.epsilon_scheduler = EpsilonScheduler.from_opt(opt)
+        self.epsilon_policy = EpsilonPolicyFactory.from_opt(opt)
         self.episode_runner = EpisodeRunner(agents, scenario, config, device)
         self.metrics_aggregator = MetricsAggregator()
         
         # Loggers and plotter
         self.plotter = self._create_plotter()
+        self.network_plotter = self._create_network_plotter()
         self.ep_logger = EpisodeMetricsLogger(run_dir)
         self.step_logger = StepMetricsLogger(run_dir, throttle=config.step_log_throttle)
         
@@ -306,6 +355,16 @@ class Trainer:
             plot_interval=self.config.plot_interval,
             out_path=str(plot_path),
             smooth_window=self.config.plot_smooth_window,
+            x_axis_mode=self.config.plot_x_axis,
+        )
+    
+    def _create_network_plotter(self) -> NetworkMetricsPlotter:
+        """Initialize the network metrics plotter."""
+        plot_path = self.run_dir.subpath("network_metrics.png")
+        return NetworkMetricsPlotter(
+            enabled=self.config.enable_plot,
+            plot_interval=self.config.plot_interval,
+            out_path=str(plot_path),
             x_axis_mode=self.config.plot_x_axis,
         )
     
@@ -329,14 +388,18 @@ class Trainer:
         self.episode_runner.reset()
         
         while not self.episode_runner.is_done():
-            eps = self.epsilon_scheduler.get_epsilon(self.total_steps)
+            eps = self.epsilon_policy.get_epsilon(
+                total_step=self.total_steps,
+                step_in_episode=self.episode_runner.step,
+                episode=episode,
+            )
             step_metrics = self.episode_runner.run_step(eps)
             
             # Learn from experience
-            self.episode_runner.learn(self.opt)
-            
-            # Step-level logging
-            self._log_step(episode, eps, step_metrics)
+            network_metrics = self.episode_runner.learn(self.opt)
+
+            # Step-level logging (includes network plotter update)
+            self._log_step(episode, eps, step_metrics, network_metrics)
             
             # Advance state
             self.episode_runner.advance()
@@ -349,7 +412,7 @@ class Trainer:
         ep_duration = time.time() - ep_start
         self._log_episode(episode, ep_metrics, ep_duration)
     
-    def _log_step(self, episode: int, epsilon: float, step_metrics: Dict):
+    def _log_step(self, episode: int, epsilon: float, step_metrics: Dict, network_metrics: Optional[NetworkMetrics] = None):
         """Log step-level metrics."""
         self.step_logger.log(
             global_step=self.total_steps,
@@ -361,6 +424,19 @@ class Trainer:
             capacity_sum_mbps=step_metrics["capacity_sum"],
         )
         
+        if network_metrics is not None:
+            self.network_plotter.update(
+                step=self.total_steps,
+                loss=network_metrics.loss,
+                mean_q=network_metrics.mean_q,
+                max_q=network_metrics.max_q,
+                min_q=network_metrics.min_q,
+                q_std=network_metrics.q_std,
+                grad_norm=network_metrics.grad_norm,
+                grad_clipped=float(network_metrics.grad_clipped),
+                target_q_mean=network_metrics.target_q_mean,
+                td_error=network_metrics.td_error,
+            )        
         if self.config.plot_x_axis == "steps":
             self.plotter.update(
                 step=self.total_steps,
@@ -404,6 +480,7 @@ class Trainer:
                 capacity_sum_mbps=metrics.avg_capacity,
                 episode_return=metrics.return_total,
             )
+            self.network_plotter.on_episode_end(episode)
     
     def _should_checkpoint(self, episode: int) -> bool:
         """Determine if a checkpoint should be saved."""
@@ -417,6 +494,7 @@ class Trainer:
         
         # Close loggers
         self.plotter.close()
+        self.network_plotter.close()
         self.ep_logger.close()
         self.step_logger.close()
         
