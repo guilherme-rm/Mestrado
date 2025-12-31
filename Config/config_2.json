@@ -5,17 +5,17 @@
    "momentum": 0.005,
    "tau": 0.005,
    "batch_size": 64,
-   "gamma": 0.95,
+   "gamma": 0.9,
    
    "min_memory_for_learning": 500,
    "action_strategy": "epsilon_greedy",
    
    "eps_start": 1.0,
-  "eps_end": 0.05,
-  "eps_decay_steps": 50000,
+  "eps_end": 0.2,
+  "eps_decay_steps": 100000,
    
-   "nepisodes": 1000,
-  "nsteps": 500,
+   "nepisodes": 500,
+   "nsteps": 500,
    "nupdate": 1,
    
    "early_termination": true,

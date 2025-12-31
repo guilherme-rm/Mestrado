@@ -26,6 +26,7 @@ You can extend by adding loss, memory usage, etc. Provide them in update().
 
 from __future__ import annotations
 
+import math
 import os
 from typing import List, Dict, Optional
 
@@ -67,6 +68,11 @@ class RealTimeStepPlotter:
         if self.enabled:
             os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
 
+    def _sanitize_value(self, value: float) -> float:
+        if value is None or not math.isfinite(value):
+            return 0.0
+        return float(value)
+
     def update(
         self,
         step: int,
@@ -77,14 +83,15 @@ class RealTimeStepPlotter:
     ):
         if not self.enabled:
             return
+        
         self.history["step"].append(step)
-        self.history["epsilon"].append(epsilon)
-        self.history["mean_reward"].append(mean_reward)
-        self.history["qos"].append(qos)
+        self.history["epsilon"].append(self._sanitize_value(epsilon))
+        self.history["mean_reward"].append(self._sanitize_value(mean_reward))
+        self.history["qos"].append(self._sanitize_value(qos))
+        
         if capacity_sum_mbps is not None:
-            self.history["capacity_sum_mbps"].append(capacity_sum_mbps)
+            self.history["capacity_sum_mbps"].append(self._sanitize_value(capacity_sum_mbps))
         else:
-            # Maintain alignment for indexing; repeat last or 0
             last = (
                 self.history["capacity_sum_mbps"][-1]
                 if self.history["capacity_sum_mbps"]
@@ -99,21 +106,29 @@ class RealTimeStepPlotter:
 
     # --- internal helpers ---
     def _moving_average(self, data: List[float]) -> List[float]:
+        if not data:
+            return []
         if len(data) < 2:
-            return data
+            return list(data)
         w = self.smooth_window
         out: List[float] = []
         cumsum = 0.0
         for i, v in enumerate(data):
-            cumsum += v
+            v_safe = v if math.isfinite(v) else 0.0
+            cumsum += v_safe
             if i >= w:
-                cumsum -= data[i - w]
-            out.append(cumsum / min(i + 1, w))
+                prev = data[i - w] if math.isfinite(data[i - w]) else 0.0
+                cumsum -= prev
+            divisor = min(i + 1, w)
+            out.append(cumsum / divisor if divisor > 0 else 0.0)
         return out
 
     def _render(self):  # pragma: no cover (simple plotting)
         if plt is None:
             return
+        if not self.history["step"]:
+            return
+            
         step = self.history["step"]
         eps = self.history["epsilon"]
         rew = self.history["mean_reward"]
@@ -143,6 +158,9 @@ class RealTimeStepPlotter:
         ax.set_xlabel(x_label)
         ax.set_ylabel("QoS Rate")
         ax.grid(alpha=0.3)
+
+        ax = axes[0][2]
+        ax.axis("off")
 
         ax = axes[1][0]
         ax.plot(step, eps, color="tab:orange")
@@ -174,11 +192,16 @@ class RealTimeStepPlotter:
         ax.grid(alpha=0.3)
 
         fig.tight_layout()
-        fig.savefig(self.out_path, dpi=120)
+        try:
+            fig.savefig(self.out_path, dpi=120)
+        except Exception:
+            pass
+        finally:
+            plt.close(fig)
 
     def close(self):
-        # Nothing persistent yet, placeholder for future resources
-        pass
+        if plt is not None:
+            plt.close("all")
 
 
 __all__ = ["RealTimeStepPlotter"]

@@ -5,7 +5,8 @@ from __future__ import annotations
 # Import math for exponential decay
 import math
 from dataclasses import dataclass
-from typing import Sequence, List
+from typing import Sequence, List, Optional
+from .metrics import NetworkMetrics
 
 import torch
 
@@ -55,7 +56,7 @@ def store_and_learn(
     scenario,
     step_idx: int,  # Kept for compatibility but unused
     opt,
-):
+) -> Optional[NetworkMetrics]:
     # Get tau for soft update (defaulting to 0.005 if not set)
     tau = getattr(opt, "tau", 0.005)
 
@@ -64,10 +65,13 @@ def store_and_learn(
         ag.Save_Transition(state, actions[i], next_state, rewards[i], scenario)
 
         # 2. Optimize policy network
-        ag.Optimize_Model()
+        network_metrics = ag.Optimize_Model()
+        
 
         # 3. Use Soft Target Update at every step for stable learning
         ag.Soft_Target_Update(tau=tau)
+
+        return network_metrics
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
@@ -85,6 +89,9 @@ def should_terminate(state: torch.Tensor, target_state: torch.Tensor) -> bool:
 
 
 def create_agents(opt, sce, scenario, device) -> List[Agent]:
+    
+    Agent.initialize_all_locations(opt.nagents, device)
+    
     return [
         Agent(opt, sce, scenario, index=i, device=device) for i in range(opt.nagents)
     ]
