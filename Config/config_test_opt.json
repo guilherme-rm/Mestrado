@@ -15,11 +15,13 @@
   "//_EXPLORATION": "",
   "eps_start": 1.0,
   "eps_end": 0.05,
-  "eps_decay_steps": 500000,
+  "eps_decay_steps": 50000,
+  "action_strategy": "epsilon_greedy",
+
 
   "//_TRAINING_DURATION": "",
-  "nepisodes": 50000,
-  "nsteps": 100,
+  "nepisodes": 25000,
+  "nsteps": 50,
 
   "//_MISC": "",
   "early_termination": true,

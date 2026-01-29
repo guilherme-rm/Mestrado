@@ -53,11 +53,11 @@ def store_and_learn(
     next_state: torch.Tensor,
     rewards: torch.Tensor,
     scenario,
-    step_idx: int,  # Kept for compatibility but unused
+    step_idx: int,
     opt,
 ):
-    # Get tau for soft update (defaulting to 0.005 if not set)
-    tau = getattr(opt, "tau", 0.005)
+    # Get nupdate for hard target update period
+    nupdate = getattr(opt, "nupdate", 50)
 
     for i, ag in enumerate(agents):
         # 1. Store transition
@@ -66,8 +66,9 @@ def store_and_learn(
         # 2. Optimize policy network
         ag.Optimize_Model()
 
-        # 3. Use Soft Target Update at every step for stable learning
-        ag.Soft_Target_Update(tau=tau)
+        # 3. Hard target update every nupdate steps (like original UARA-DRL)
+        if step_idx % nupdate == 0:
+            ag.Target_Update()
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:

@@ -155,7 +155,9 @@ class DQNOptimizer:
 
         self.optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model_policy.parameters(), max_norm=10.0)
+        for param in self.model_policy.parameters():
+            if param.grad is not None:
+                param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
     
     def soft_update(self, tau: float = 0.005):
@@ -167,20 +169,33 @@ class DQNOptimizer:
                 policy_state_dict[key] * tau + target_state_dict[key] * (1.0 - tau)
             )
         self.model_target.load_state_dict(target_state_dict)
+    
+    def hard_update(self):
+        """Performs hard update of target network (full copy) like original UARA-DRL."""
+        self.model_target.load_state_dict(self.model_policy.state_dict())
 
 class ActionSelector:
-    """Encapsulates action selection strategy (epsilon-greedy, Boltzmann, etc.)."""
+    """Encapsulates action selection strategy (epsilon-greedy, Boltzmann, etc.).
+    """
     
     def __init__(self, strategy: str = "epsilon_greedy"):
         self.strategy = strategy
     
     def select(self, q_values: torch.Tensor, epsilon: float) -> int:
-        """Select action based on Q-values and exploration parameter."""
+        """Select action based on Q-values and exploration parameter.
+        
+        Args:
+            q_values: Q-values for all actions
+            epsilon: Exploration threshold 
+        Returns:
+            Selected action index
+        """
         if self.strategy == "epsilon_greedy":
+            # Original UARA-DRL logic: sample < eps → exploit, otherwise explore
             if random() < epsilon:
-                return randrange(q_values.size(-1))
-            else:
                 return int(q_values.argmax().item())
+            else:
+                return randrange(q_values.size(-1))
         elif self.strategy == "greedy":
             return int(q_values.argmax().item())
         elif self.strategy == "boltzmann":
@@ -215,9 +230,10 @@ class Agent:
         self.model_target.eval()
         
         # Optimizer component
-        self.optimizer = optim.Adam(
+        self.optimizer = optim.RMSprop(
             params=self.model_policy.parameters(),
             lr=opt.learning_rate,
+            momentum=opt.momentum,
         )
         self._dqn_optimizer = DQNOptimizer(
             self.model_policy, self.model_target, self.optimizer, opt, device
@@ -258,6 +274,10 @@ class Agent:
 
     def Soft_Target_Update(self, tau: float = 0.005):
         self._dqn_optimizer.soft_update(tau)
+    
+    def Target_Update(self):
+        """Hard update of target network (full copy) like original UARA-DRL."""
+        self._dqn_optimizer.hard_update()
 
     def Optimize_Model(self):
         self._dqn_optimizer.optimize(self.memory)

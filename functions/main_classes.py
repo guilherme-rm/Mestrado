@@ -63,32 +63,62 @@ class TrainingConfig:
 
 
 class EpsilonScheduler:
-    """Handles epsilon decay for exploration."""
+    """Handles epsilon scheduling for exploration.
     
-    def __init__(self, eps_start, eps_end, eps_decay_steps, nepisodes):
+    Supports two policies:
+    - 'exponential_decay': Standard RL approach, starts high and decays
+    - 'linear_increasing': Like original UARA-DRL, starts low and increases
+    """
+    
+    def __init__(self, policy: str, eps_min: float, eps_max: float, 
+                 eps_increment: float, eps_start: float, eps_end: float, 
+                 eps_decay_steps: int, nepisodes: int, nsteps: int):
+        self.policy = policy
+        self.eps_min = eps_min
+        self.eps_max = eps_max
+        self.eps_increment = eps_increment
         self.eps_start = eps_start
         self.eps_end = eps_end
         self.eps_decay_steps = eps_decay_steps
         self.nepisodes = nepisodes
+        self.nsteps = nsteps
+        self.current_episode = 0
+        self.current_step_in_episode = 0
+    
+    def set_episode(self, episode: int):
+        """Set current episode (for linear increasing policy)."""
+        self.current_episode = episode
+        self.current_step_in_episode = 0
     
     def get_epsilon(self, current_step: int) -> float:
-        """Compute epsilon using exponential decay based on current step."""
-        if self.eps_decay_steps <= 0:
-            return self.eps_end
-        
-        epsilon = self.eps_end + (self.eps_start - self.eps_end) * math.exp(
-            -1.0 * current_step / self.eps_decay_steps
-        )
-        return epsilon
+        """Compute epsilon based on selected policy."""
+        if self.policy == "linear_increasing":
+            eps = self.eps_min + self.eps_increment * self.current_step_in_episode * (self.current_episode + 1)
+            if eps > self.eps_max:
+                eps = self.eps_max
+            self.current_step_in_episode += 1
+            return eps
+        else:
+            if self.eps_decay_steps <= 0:
+                return self.eps_end
+            epsilon = self.eps_end + (self.eps_start - self.eps_end) * math.exp(
+                -1.0 * current_step / self.eps_decay_steps
+            )
+            return epsilon
     
     @classmethod
     def from_opt(cls, opt) -> "EpsilonScheduler":
         """Create scheduler from opt DotDic object."""
         return cls(
+            policy=getattr(opt, "epsilon_policy", "exponential_decay"),
+            eps_min=getattr(opt, "eps_min", 0.0),
+            eps_max=getattr(opt, "eps_max", 0.9),
+            eps_increment=getattr(opt, "eps_increment", 0.003),
             eps_start=getattr(opt, "eps_start", 1.0),
             eps_end=getattr(opt, "eps_end", 0.05),
             eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
-            nepisodes = getattr(opt, "nepisodes", 1000)
+            nepisodes=getattr(opt, "nepisodes", 1000),
+            nsteps=getattr(opt, "nsteps", 500),
         )
 
 
@@ -194,6 +224,7 @@ class EpisodeRunner:
             for _ in range(self.config.nagents)
         ]
         self.step = 0
+        self._terminated_early = False
     
     def run_step(self, epsilon: float) -> Dict[str, float]:
         """Execute a single step and return step metrics."""
@@ -327,6 +358,9 @@ class Trainer:
         """Execute a single training episode."""
         ep_start = time.time()
         self.episode_runner.reset()
+        
+        # Set current episode for linear increasing epsilon policy
+        self.epsilon_scheduler.set_episode(episode)
         
         while not self.episode_runner.is_done():
             eps = self.epsilon_scheduler.get_epsilon(self.total_steps)
