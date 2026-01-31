@@ -6,7 +6,7 @@
    "rPBS": 100,
    "rFBS": 30,
    "BW": 180000,
-   "nChannel": 20,
+   "nChannel": 30,
    "N0": -174,
    "profit": 0.5,
    "power_cost": 0.0005,

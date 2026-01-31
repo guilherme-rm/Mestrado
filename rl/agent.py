@@ -53,7 +53,11 @@ class RewardCalculator:
         agent_location: torch.Tensor,
         scenario,
     ) -> Tuple[int, torch.Tensor, torch.Tensor]:
-        """Compute QoS satisfaction, reward, and capacity."""
+        """Compute QoS satisfaction, reward, and capacity.
+        
+        Reward = profit * Rate - power_cost * Tx_power_dBm - action_cost
+        (utility-based reward with action selection cost)
+        """
         BS_list = scenario.Get_BaseStations()
         K = self.sce.nChannel
 
@@ -64,7 +68,8 @@ class RewardCalculator:
         if BS_selected >= len(BS_list):
             return self._invalid_action_result()
 
-        rx_power = self._compute_rx_power(BS_list[BS_selected], agent_location)
+        selected_bs = BS_list[BS_selected]
+        rx_power = self._compute_rx_power(selected_bs, agent_location)
         if rx_power <= 1e-20:
             return self._invalid_action_result()
 
@@ -75,11 +80,28 @@ class RewardCalculator:
         sinr, capacity_mbps = self._compute_sinr_and_capacity(rx_power, interference)
         cap_tensor = torch.tensor(float(capacity_mbps), device=self.device)
 
+        # Compute utility-based reward
+        # Rate in Mbps (same as capacity_mbps)
+        rate = capacity_mbps
+        
+        # Get config parameters with defaults
+        profit = float(getattr(self.sce, "profit", 0.5))
+        power_cost = float(getattr(self.sce, "power_cost", 0.0005))
+        action_cost = float(getattr(self.sce, "action_cost", 0.001))
+        
+        # Get transmit power of selected BS
+        tx_power_dbm = selected_bs.Transmit_Power_dBm()
+        
+        # Calculate reward: utility (profit * rate) minus costs
+        reward_val = profit * rate - power_cost * tx_power_dbm - action_cost
+        
+        # Determine QoS satisfaction (binary)
         if sinr >= 10 ** (self.sce.QoS_thr / 10):
-            reward_val = float(getattr(self.sce, "profit", 1.0))
-            return (1, torch.tensor(reward_val, device=self.device, dtype=torch.float32), cap_tensor)
+            qos = 1
+        else:
+            qos = 0
 
-        return (0, torch.tensor(self.sce.negative_cost, device=self.device, dtype=torch.float32), cap_tensor)
+        return (qos, torch.tensor(reward_val, device=self.device, dtype=torch.float32), cap_tensor)
     
     def _invalid_action_result(self) -> Tuple[int, torch.Tensor, torch.Tensor]:
         return (
