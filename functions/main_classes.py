@@ -16,6 +16,7 @@ from rl.training import (
     should_terminate,
 )
 from functions.live_plot import RealTimeStepPlotter
+from functions.network_metrics_plot import NetworkMetricsPlotter
 from functions.logging import (
     RunDirectoryManager,
     save_config,
@@ -24,6 +25,12 @@ from functions.logging import (
     StepMetricsLogger,
     checkpoint_agents,
     write_summary,
+)
+from constants import (
+    NETWORK_PLOT_ENABLED,
+    NETWORK_PLOT_INTERVAL,
+    NETWORK_PLOT_SMOOTH_WINDOW,
+    NETWORK_PLOT_FILENAME,
 )
 
 
@@ -257,9 +264,13 @@ class EpisodeRunner:
         
         return step_metrics
     
-    def learn(self, opt):
-        """Store experience and update networks."""
-        store_and_learn(
+    def learn(self, opt) -> Optional[Dict[str, float]]:
+        """Store experience and update networks.
+        
+        Returns:
+            Aggregated training metrics if learning occurred, None otherwise.
+        """
+        return store_and_learn(
             self.agents,
             self.ctx.state,
             self.ctx.actions,
@@ -320,8 +331,8 @@ class Trainer:
         self.episode_runner = EpisodeRunner(agents, scenario, config, device)
         self.metrics_aggregator = MetricsAggregator()
         
-        # Loggers and plotter
         self.plotter = self._create_plotter()
+        self.network_plotter = self._create_network_plotter()
         self.ep_logger = EpisodeMetricsLogger(run_dir)
         self.step_logger = StepMetricsLogger(run_dir, throttle=config.step_log_throttle)
         
@@ -337,6 +348,17 @@ class Trainer:
             plot_interval=self.config.plot_interval,
             out_path=str(plot_path),
             smooth_window=self.config.plot_smooth_window,
+            x_axis_mode=self.config.plot_x_axis,
+        )
+    
+    def _create_network_plotter(self) -> NetworkMetricsPlotter:
+        """Initialize the network metrics plotter."""
+        plot_path = self.run_dir.subpath(NETWORK_PLOT_FILENAME)
+        return NetworkMetricsPlotter(
+            enabled=NETWORK_PLOT_ENABLED and self.config.enable_plot,
+            plot_interval=NETWORK_PLOT_INTERVAL,
+            out_path=str(plot_path),
+            smooth_window=NETWORK_PLOT_SMOOTH_WINDOW,
             x_axis_mode=self.config.plot_x_axis,
         )
     
@@ -366,11 +388,10 @@ class Trainer:
             eps = self.epsilon_scheduler.get_epsilon(self.total_steps)
             step_metrics = self.episode_runner.run_step(eps)
             
-            # Learn from experience
-            self.episode_runner.learn(self.opt)
+            train_metrics = self.episode_runner.learn(self.opt)
             
             # Step-level logging
-            self._log_step(episode, eps, step_metrics)
+            self._log_step(episode, eps, step_metrics, train_metrics)
             
             # Advance state
             self.episode_runner.advance()
@@ -383,7 +404,13 @@ class Trainer:
         ep_duration = time.time() - ep_start
         self._log_episode(episode, ep_metrics, ep_duration)
     
-    def _log_step(self, episode: int, epsilon: float, step_metrics: Dict):
+    def _log_step(
+        self,
+        episode: int,
+        epsilon: float,
+        step_metrics: Dict,
+        train_metrics: Optional[Dict[str, float]] = None,
+    ):
         """Log step-level metrics."""
         self.step_logger.log(
             global_step=self.total_steps,
@@ -402,6 +429,20 @@ class Trainer:
                 mean_reward=step_metrics["mean_reward"],
                 qos=step_metrics["qos_mean"],
                 capacity_sum_mbps=step_metrics["capacity_sum"],
+            )
+        
+        # Update network metrics plotter if learning occurred
+        if train_metrics is not None:
+            self.network_plotter.update(
+                step=self.total_steps,
+                loss=train_metrics.get("loss"),
+                mean_q=train_metrics.get("mean_q"),
+                max_q=train_metrics.get("max_q"),
+                min_q=train_metrics.get("min_q"),
+                q_std=train_metrics.get("q_std"),
+                grad_norm=train_metrics.get("grad_norm"),
+                target_q_mean=train_metrics.get("target_q_mean"),
+                td_error=train_metrics.get("td_error"),
             )
     
     def _log_episode(self, episode: int, metrics: EpisodeMetrics, duration: float):
@@ -449,8 +490,8 @@ class Trainer:
         total_duration = time.time() - self.start_time
         print(f"Total training time: {total_duration/60:.2f} min ({total_duration:.2f} s)")
         
-        # Close loggers
         self.plotter.close()
+        self.network_plotter.close()
         self.ep_logger.close()
         self.step_logger.close()
         

@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from random import random, uniform, choice, randrange
-from typing import Tuple
+from typing import Tuple, Optional, Dict
 
 import numpy as np
 from numpy import pi
 import torch
+
+from constants import GRAD_CLIP_VALUE
+
+
+@dataclass
+class TrainMetrics:
+    """Metrics from a single DQN optimization step."""
+    loss: float = 0.0
+    mean_q: float = 0.0
+    max_q: float = 0.0
+    min_q: float = 0.0
+    q_std: float = 0.0
+    grad_norm: float = 0.0
+    target_q_mean: float = 0.0
+    td_error: float = 0.0
+    did_learn: bool = False  # Whether learning actually happened
+
+    def to_dict(self) -> Dict[str, float]:
+        """Convert to dictionary for logging."""
+        return {
+            "loss": self.loss,
+            "mean_q": self.mean_q,
+            "max_q": self.max_q,
+            "min_q": self.min_q,
+            "q_std": self.q_std,
+            "grad_norm": self.grad_norm,
+            "target_q_mean": self.target_q_mean,
+            "td_error": self.td_error,
+        }
 
 # Import Adam optimizer
 from torch import optim
@@ -148,15 +178,37 @@ class DQNOptimizer:
         self.optimizer = optimizer
         self.opt = opt
         self.device = device
+        
+        # Store last training metrics
+        self._last_metrics: TrainMetrics = TrainMetrics()
     
-    def optimize(self, memory: ReplayMemory):
-        """Performs a single optimization step using Double DQN."""
+    @property
+    def last_metrics(self) -> TrainMetrics:
+        """Get metrics from the last optimization step."""
+        return self._last_metrics
+    
+    def _compute_grad_norm(self) -> float:
+        """Compute total gradient norm across all parameters."""
+        total_norm = 0.0
+        for param in self.model_policy.parameters():
+            if param.grad is not None:
+                total_norm += param.grad.data.norm(2).item() ** 2
+        return total_norm ** 0.5
+    
+    def optimize(self, memory: ReplayMemory) -> TrainMetrics:
+        """Performs a single optimization step using Double DQN.
+        
+        Returns:
+            TrainMetrics with statistics from this optimization step.
+        """
+        self._last_metrics = TrainMetrics()
+        
         if len(memory) < self.opt.batch_size:
-            return
+            return self._last_metrics
 
         if (hasattr(self.opt, "min_memory_for_learning") 
             and len(memory) < self.opt.min_memory_for_learning):
-            return
+            return self._last_metrics
 
         transitions = memory.Sample(self.opt.batch_size)
         batch = Transition(*zip(*transitions))
@@ -166,21 +218,42 @@ class DQNOptimizer:
         reward_batch = torch.cat(batch.reward).to(self.device)
         next_state_batch = torch.cat(batch.next_state).to(self.device)
 
-        q_pred = self.model_policy(state_batch).gather(1, action_batch)
+        q_all = self.model_policy(state_batch)
+        q_pred = q_all.gather(1, action_batch)
 
         with torch.no_grad():
             next_actions = self.model_policy(next_state_batch).argmax(1, keepdim=True)
             q_next = self.model_target(next_state_batch).gather(1, next_actions)
             target_q = reward_batch.unsqueeze(1) + self.opt.gamma * q_next
 
+        td_error = (q_pred - target_q).abs()
+        
         loss = F.smooth_l1_loss(q_pred, target_q)
 
         self.optimizer.zero_grad()
         loss.backward()
+        
+        grad_norm = self._compute_grad_norm()
+        
         for param in self.model_policy.parameters():
             if param.grad is not None:
-                param.grad.data.clamp_(-1, 1)
+                param.grad.data.clamp_(-GRAD_CLIP_VALUE, GRAD_CLIP_VALUE)
         self.optimizer.step()
+        
+        # Store metrics
+        self._last_metrics = TrainMetrics(
+            loss=loss.item(),
+            mean_q=q_all.mean().item(),
+            max_q=q_all.max().item(),
+            min_q=q_all.min().item(),
+            q_std=q_all.std().item(),
+            grad_norm=grad_norm,
+            target_q_mean=target_q.mean().item(),
+            td_error=td_error.mean().item(),
+            did_learn=True,
+        )
+        
+        return self._last_metrics
     
     def soft_update(self, tau: float = 0.005):
         """Performs soft update of the target network parameters."""
@@ -301,8 +374,13 @@ class Agent:
         """Hard update of target network (full copy) like original UARA-DRL."""
         self._dqn_optimizer.hard_update()
 
-    def Optimize_Model(self):
-        self._dqn_optimizer.optimize(self.memory)
+    def Optimize_Model(self) -> TrainMetrics:
+        """Optimize the policy network and return training metrics."""
+        return self._dqn_optimizer.optimize(self.memory)
+    
+    def get_train_metrics(self) -> TrainMetrics:
+        """Get metrics from the last optimization step."""
+        return self._dqn_optimizer.last_metrics
 
 
-__all__ = ["Agent", "ActionSelector", "RewardCalculator", "DQNOptimizer", "LocationManager"]
+__all__ = ["Agent", "ActionSelector", "RewardCalculator", "DQNOptimizer", "LocationManager", "TrainMetrics"]

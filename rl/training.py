@@ -5,11 +5,11 @@ from __future__ import annotations
 # Import math for exponential decay
 import math
 from dataclasses import dataclass
-from typing import Sequence, List
+from typing import Sequence, List, Optional, Dict
 
 import torch
 
-from .agent import Agent
+from .agent import Agent, TrainMetrics
 
 
 @dataclass
@@ -55,20 +55,45 @@ def store_and_learn(
     scenario,
     step_idx: int,
     opt,
-):
+) -> Optional[Dict[str, float]]:
+    """Store transitions and perform learning step.
+    
+    Returns:
+        Aggregated training metrics across all agents that learned,
+        or None if no agent learned this step.
+    """
     # Get nupdate for hard target update period
     nupdate = getattr(opt, "nupdate", 50)
+    
+    all_metrics: List[TrainMetrics] = []
 
     for i, ag in enumerate(agents):
         # 1. Store transition
         ag.Save_Transition(state, actions[i], next_state, rewards[i], scenario)
 
         # 2. Optimize policy network
-        ag.Optimize_Model()
+        metrics = ag.Optimize_Model()
+        if metrics.did_learn:
+            all_metrics.append(metrics)
 
         # 3. Hard target update every nupdate steps (like original UARA-DRL)
         if step_idx % nupdate == 0:
             ag.Target_Update()
+    
+    if not all_metrics:
+        return None
+    
+    n = len(all_metrics)
+    return {
+        "loss": sum(m.loss for m in all_metrics) / n,
+        "mean_q": sum(m.mean_q for m in all_metrics) / n,
+        "max_q": max(m.max_q for m in all_metrics),
+        "min_q": min(m.min_q for m in all_metrics),
+        "q_std": sum(m.q_std for m in all_metrics) / n,
+        "grad_norm": sum(m.grad_norm for m in all_metrics) / n,
+        "target_q_mean": sum(m.target_q_mean for m in all_metrics) / n,
+        "td_error": sum(m.td_error for m in all_metrics) / n,
+    }
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
