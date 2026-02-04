@@ -1,4 +1,5 @@
 {  
+   "//": "python main.py -c1 Config/config_1.json -c2 Config/config_2.json",
    "nagents": 30,
    "capacity": 500,
    "learning_rate": 0.01,
@@ -8,7 +9,7 @@
    "gamma": 0.9,
    
    "min_memory_for_learning": 8,
-   "action_strategy": "epsilon_greedy",
+   "action_strategy": "boltzmann",
    
    "epsilon_policy": "linear_increasing",
    "eps_min": 0.0,
@@ -19,7 +20,7 @@
    "eps_decay_steps": 50000,
    
    "nepisodes": 500,
-   "nsteps": 500,
+   "nsteps": 50,
    "nupdate": 50,
    
    "early_termination": true,

@@ -275,6 +275,37 @@ class ActionSelector:
     
     def __init__(self, strategy: str = "epsilon_greedy"):
         self.strategy = strategy
+        self._select = self._get_strategy_fn(strategy)
+    
+    def _get_strategy_fn(self, strategy: str):
+        """Return the selection function for the given strategy."""
+        strategies = {
+            "epsilon_greedy": self._epsilon_greedy,
+            "epsilon_greedy_original": self._epsilon_greedy_original,
+            "greedy": self._greedy,
+            "boltzmann": self._boltzmann,
+        }
+        if strategy not in strategies:
+            raise ValueError(f"Unknown strategy: {strategy}")
+        return strategies[strategy]
+    
+    def _epsilon_greedy_original(self, q_values: torch.Tensor, epsilon: float) -> int:
+        if random() < epsilon:
+            return int(q_values.argmax().item())
+        return randrange(q_values.size(-1))
+    
+    def _epsilon_greedy(self, q_values: torch.Tensor, epsilon: float) -> int:
+        if random() > epsilon:
+            return int(q_values.argmax().item())
+        return randrange(q_values.size(-1))
+    
+    def _greedy(self, q_values: torch.Tensor, epsilon: float) -> int:
+        return int(q_values.argmax().item())
+    
+    def _boltzmann(self, q_values: torch.Tensor, epsilon: float) -> int:
+        temperature = max(epsilon, 0.01)  
+        probs = torch.softmax(q_values / temperature, dim=-1)
+        return int(torch.multinomial(probs, 1).item())
     
     def select(self, q_values: torch.Tensor, epsilon: float) -> int:
         """Select action based on Q-values and exploration parameter.
@@ -285,20 +316,7 @@ class ActionSelector:
         Returns:
             Selected action index
         """
-        if self.strategy == "epsilon_greedy":
-            # Original UARA-DRL logic: sample < eps → exploit, otherwise explore
-            if random() < epsilon:
-                return int(q_values.argmax().item())
-            else:
-                return randrange(q_values.size(-1))
-        elif self.strategy == "greedy":
-            return int(q_values.argmax().item())
-        elif self.strategy == "boltzmann":
-            temperature = max(epsilon, 0.01)  # Use epsilon as temperature
-            probs = torch.softmax(q_values / temperature, dim=-1)
-            return int(torch.multinomial(probs, 1).item())
-        else:
-            raise ValueError(f"Unknown strategy: {self.strategy}")
+        return self._select(q_values, epsilon)
         
 class Agent:
     
