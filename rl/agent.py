@@ -284,10 +284,41 @@ class ActionSelector:
             "epsilon_greedy_original": self._epsilon_greedy_original,
             "greedy": self._greedy,
             "boltzmann": self._boltzmann,
+            "langevin": self._langevin,
         }
         if strategy not in strategies:
             raise ValueError(f"Unknown strategy: {strategy}")
         return strategies[strategy]
+    
+    def _langevin(self, q_values: torch.Tensor, epsilon: float) -> int:
+        """Langevin Monte Carlo action selection.
+        
+        Treats Q-values as an energy-based model and uses Langevin dynamics
+        to sample actions. The epsilon parameter controls the temperature,
+        with higher values leading to more exploration.
+        
+        Args:
+            q_values: Q-values for all actions
+            epsilon: Temperature parameter (higher = more exploration)
+            
+        Returns:
+            Selected action index
+        """
+        temperature = max(epsilon, 0.05)
+        step_size = 0.05
+        n_steps = 15
+        
+        log_probs = q_values / temperature
+        
+        for _ in range(n_steps):
+            probs = torch.softmax(log_probs, dim=-1)
+            score = q_values / temperature - (probs * q_values).sum() / temperature
+            noise = torch.randn_like(log_probs)
+            log_probs = log_probs + (step_size / 2) * score + (step_size ** 0.5) * noise
+        
+        # Final sample from the refined distribution
+        probs = torch.softmax(log_probs, dim=-1)
+        return int(torch.multinomial(probs, 1).item())
     
     def _epsilon_greedy_original(self, q_values: torch.Tensor, epsilon: float) -> int:
         if random() < epsilon:
@@ -371,6 +402,40 @@ class Agent:
         )
 
         return torch.tensor([[action]], device=self.device, dtype=torch.long)
+    
+    def get_q_diagnostics(self, state: torch.Tensor) -> dict:
+        """Get Q-value diagnostics for debugging action selection.
+        
+        Returns:
+            dict with Q-value statistics to diagnose if the network
+            is properly differentiating between good and bad actions.
+        """
+        with torch.no_grad():
+            q_values = self.model_policy(state)
+            q_flat = q_values.flatten()
+            
+            best_action = int(q_flat.argmax().item())
+            worst_action = int(q_flat.argmin().item())
+            
+            # Q-value spread indicates how much the network differentiates actions
+            q_spread = float(q_flat.max().item() - q_flat.min().item())
+            q_std = float(q_flat.std().item())
+            
+            # Top-k actions
+            k = min(5, q_flat.size(0))
+            top_k_values, top_k_indices = torch.topk(q_flat, k)
+            
+            return {
+                "best_action": best_action,
+                "best_q": float(q_flat.max().item()),
+                "worst_action": worst_action,
+                "worst_q": float(q_flat.min().item()),
+                "mean_q": float(q_flat.mean().item()),
+                "q_spread": q_spread,
+                "q_std": q_std,
+                "top_k_actions": top_k_indices.tolist(),
+                "top_k_q_values": top_k_values.tolist(),
+            }
 
     def Get_Reward(self, action_all, action_i, state, scenario):
         return self._reward_calculator.compute(

@@ -31,6 +31,8 @@ from constants import (
     NETWORK_PLOT_INTERVAL,
     NETWORK_PLOT_SMOOTH_WINDOW,
     NETWORK_PLOT_FILENAME,
+    EPS_MAX_DECAY,
+    EPS_MAX_MIN,
 )
 
 
@@ -79,10 +81,12 @@ class EpsilonScheduler:
     
     def __init__(self, policy: str, eps_min: float, eps_max: float, 
                  eps_increment: float, eps_start: float, eps_end: float, 
-                 eps_decay_steps: int, nepisodes: int, nsteps: int):
+                 eps_decay_steps: int, nepisodes: int, nsteps: int,
+                 eps_max_decay: float = 1.0, eps_max_min: float = 0.1):
         self.policy = policy
         self.eps_min = eps_min
-        self.eps_max = eps_max
+        self.eps_max_initial = eps_max 
+        self.eps_max = eps_max  
         self.eps_increment = eps_increment
         self.eps_start = eps_start
         self.eps_end = eps_end
@@ -90,12 +94,20 @@ class EpsilonScheduler:
         self.nepisodes = nepisodes
         self.nsteps = nsteps
         self.current_episode = 0
-        self.current_step_in_episode = 0
+        self.current_step_in_episode = 0        
+        self.eps_max_decay = eps_max_decay 
+        self.eps_max_min = eps_max_min  
     
     def set_episode(self, episode: int):
-        """Set current episode (for linear increasing policy)."""
+        """Set current episode and update decaying eps_max."""
         self.current_episode = episode
         self.current_step_in_episode = 0
+        
+        if self.eps_max_decay < 1.0:
+            self.eps_max = max(
+                self.eps_max_min,
+                self.eps_max_initial * (self.eps_max_decay ** episode)
+            )
     
     def get_epsilon(self, current_step: int) -> float:
         """Compute epsilon based on selected policy."""
@@ -126,6 +138,8 @@ class EpsilonScheduler:
             eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
             nepisodes=getattr(opt, "nepisodes", 1000),
             nsteps=getattr(opt, "nsteps", 500),
+            eps_max_decay=EPS_MAX_DECAY,
+            eps_max_min=EPS_MAX_MIN,
         )
 
 
