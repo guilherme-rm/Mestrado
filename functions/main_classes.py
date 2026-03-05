@@ -31,6 +31,8 @@ from constants import (
     NETWORK_PLOT_INTERVAL,
     NETWORK_PLOT_SMOOTH_WINDOW,
     NETWORK_PLOT_FILENAME,
+    EPS_MAX_DECAY,
+    EPS_MAX_MIN,
 )
 
 
@@ -79,10 +81,12 @@ class EpsilonScheduler:
     
     def __init__(self, policy: str, eps_min: float, eps_max: float, 
                  eps_increment: float, eps_start: float, eps_end: float, 
-                 eps_decay_steps: int, nepisodes: int, nsteps: int):
+                 eps_decay_steps: int, nepisodes: int, nsteps: int,
+                 eps_max_decay: float = 1.0, eps_max_min: float = 0.1):
         self.policy = policy
         self.eps_min = eps_min
-        self.eps_max = eps_max
+        self.eps_max_initial = eps_max 
+        self.eps_max = eps_max  
         self.eps_increment = eps_increment
         self.eps_start = eps_start
         self.eps_end = eps_end
@@ -90,12 +94,20 @@ class EpsilonScheduler:
         self.nepisodes = nepisodes
         self.nsteps = nsteps
         self.current_episode = 0
-        self.current_step_in_episode = 0
+        self.current_step_in_episode = 0        
+        self.eps_max_decay = eps_max_decay 
+        self.eps_max_min = eps_max_min  
     
     def set_episode(self, episode: int):
-        """Set current episode (for linear increasing policy)."""
+        """Set current episode and update decaying eps_max."""
         self.current_episode = episode
         self.current_step_in_episode = 0
+        
+        if self.eps_max_decay < 1.0:
+            self.eps_max = max(
+                self.eps_max_min,
+                self.eps_max_initial * (self.eps_max_decay ** episode)
+            )
     
     def get_epsilon(self, current_step: int) -> float:
         """Compute epsilon based on selected policy."""
@@ -126,29 +138,88 @@ class EpsilonScheduler:
             eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
             nepisodes=getattr(opt, "nepisodes", 1000),
             nsteps=getattr(opt, "nsteps", 500),
+            eps_max_decay=EPS_MAX_DECAY,
+            eps_max_min=EPS_MAX_MIN,
         )
 
 
 @dataclass
 class EpisodeMetrics:
-    """Accumulates metrics within a single episode."""
+    """Accumulates metrics within a single episode for diagnosis.
+    
+    Tracks both environment metrics (rewards, QoS, capacity) and
+    learning diagnostics (loss, Q-values, gradients).
+    """
     reward_sum: float = 0.0
     return_total: float = 0.0
     qos_sum: float = 0.0
     capacity_sum: float = 0.0
     steps: int = 0
     
+    # Track reward distribution
+    reward_min: float = float('inf')
+    reward_max: float = float('-inf')
+    reward_squared_sum: float = 0.0  # For std calculation
+    
+    # Learning diagnostics accumulators
+    loss_sum: float = 0.0
+    mean_q_sum: float = 0.0
+    max_q_sum: float = 0.0
+    td_error_sum: float = 0.0
+    grad_norm_sum: float = 0.0
+    learning_steps: int = 0  # Steps where actual learning occurred
+    memory_size: int = 0  # Replay buffer size at episode end
+    
+    # QoS success tracking
+    qos_success_count: int = 0  # Steps where QoS >= threshold
+    
     def record_step(self, rewards: torch.Tensor, qos: torch.Tensor, capacity: torch.Tensor):
-        """Record metrics from a single step."""
-        self.reward_sum += float(rewards.mean().item())
+        """Record environment metrics from a single step."""
+        mean_reward = float(rewards.mean().item())
+        self.reward_sum += mean_reward
         self.return_total += float(rewards.sum().item())
         self.qos_sum += float(qos.mean().item())
         self.capacity_sum += float(capacity.sum().item())
+        
+        # Track reward distribution
+        self.reward_min = min(self.reward_min, mean_reward)
+        self.reward_max = max(self.reward_max, mean_reward)
+        self.reward_squared_sum += mean_reward ** 2
+        
+        # Track QoS success (full satisfaction)
+        if float(qos.mean().item()) >= 1.0:
+            self.qos_success_count += 1
+        
         self.steps += 1
+    
+    def record_learning(self, train_metrics: Dict[str, float]):
+        """Record learning diagnostics from a training step."""
+        if train_metrics is None:
+            return
+        
+        self.loss_sum += train_metrics.get("loss", 0.0)
+        self.mean_q_sum += train_metrics.get("mean_q", 0.0)
+        self.max_q_sum += train_metrics.get("max_q", 0.0)
+        self.td_error_sum += train_metrics.get("td_error", 0.0)
+        self.grad_norm_sum += train_metrics.get("grad_norm", 0.0)
+        self.learning_steps += 1
+    
+    def set_memory_size(self, size: int):
+        """Set replay buffer size at episode end."""
+        self.memory_size = size
     
     @property
     def avg_reward(self) -> float:
         return self.reward_sum / max(1, self.steps)
+    
+    @property
+    def reward_std(self) -> float:
+        """Standard deviation of rewards in this episode."""
+        if self.steps < 2:
+            return 0.0
+        mean = self.avg_reward
+        variance = (self.reward_squared_sum / self.steps) - (mean ** 2)
+        return max(0.0, variance) ** 0.5
     
     @property
     def qos_rate(self) -> float:
@@ -157,6 +228,32 @@ class EpisodeMetrics:
     @property
     def avg_capacity(self) -> float:
         return self.capacity_sum / max(1, self.steps)
+    
+    @property
+    def success_rate(self) -> float:
+        """Fraction of steps with full QoS satisfaction."""
+        return self.qos_success_count / max(1, self.steps)
+    
+    # Learning diagnostics averages
+    @property
+    def loss_avg(self) -> float:
+        return self.loss_sum / max(1, self.learning_steps)
+    
+    @property
+    def mean_q_avg(self) -> float:
+        return self.mean_q_sum / max(1, self.learning_steps)
+    
+    @property
+    def max_q_avg(self) -> float:
+        return self.max_q_sum / max(1, self.learning_steps)
+    
+    @property
+    def td_error_avg(self) -> float:
+        return self.td_error_sum / max(1, self.learning_steps)
+    
+    @property
+    def grad_norm_avg(self) -> float:
+        return self.grad_norm_sum / max(1, self.learning_steps)
 
 
 class MetricsAggregator:
@@ -390,6 +487,9 @@ class Trainer:
             
             train_metrics = self.episode_runner.learn(self.opt)
             
+            # Record learning metrics for episode aggregation
+            self.episode_runner.metrics.record_learning(train_metrics)
+            
             # Step-level logging
             self._log_step(episode, eps, step_metrics, train_metrics)
             
@@ -411,7 +511,13 @@ class Trainer:
         step_metrics: Dict,
         train_metrics: Optional[Dict[str, float]] = None,
     ):
-        """Log step-level metrics."""
+        """Log step-level metrics including learning diagnostics."""
+        # Get memory size from first agent
+        memory_size = len(self.agents[0].memory) if self.agents else 0
+        
+        # Determine if learning occurred
+        did_learn = train_metrics is not None
+        
         self.step_logger.log(
             global_step=self.total_steps,
             episode=episode,
@@ -420,6 +526,17 @@ class Trainer:
             mean_reward=step_metrics["mean_reward"],
             qos_mean=step_metrics["qos_mean"],
             capacity_sum_mbps=step_metrics["capacity_sum"],
+            # Learning diagnostics
+            loss=train_metrics.get("loss", "") if train_metrics else "",
+            mean_q=train_metrics.get("mean_q", "") if train_metrics else "",
+            max_q=train_metrics.get("max_q", "") if train_metrics else "",
+            min_q=train_metrics.get("min_q", "") if train_metrics else "",
+            q_std=train_metrics.get("q_std", "") if train_metrics else "",
+            td_error=train_metrics.get("td_error", "") if train_metrics else "",
+            grad_norm=train_metrics.get("grad_norm", "") if train_metrics else "",
+            target_q_mean=train_metrics.get("target_q_mean", "") if train_metrics else "",
+            memory_size=memory_size,
+            did_learn=1 if did_learn else 0,
         )
         
         if self.config.plot_x_axis == "steps":
@@ -446,19 +563,35 @@ class Trainer:
             )
     
     def _log_episode(self, episode: int, metrics: EpisodeMetrics, duration: float):
-        """Log episode-level metrics."""
+        """Log episode-level metrics including learning diagnostics."""
         eps = self.episode_runner.last_epsilon
         
-        # CSV logging
+        # Get memory size from first agent
+        memory_size = len(self.agents[0].memory) if self.agents else 0
+        metrics.set_memory_size(memory_size)
+        
+        # CSV logging with all diagnostic metrics
         self.ep_logger.log(
             episode=episode,
             steps=metrics.steps,
-            avg_reward=metrics.avg_reward,
             return_val=metrics.return_total,
+            avg_reward=metrics.avg_reward,
+            reward_min=metrics.reward_min if metrics.reward_min != float('inf') else "",
+            reward_max=metrics.reward_max if metrics.reward_max != float('-inf') else "",
+            reward_std=metrics.reward_std,
             qos_rate=metrics.qos_rate,
             capacity_mean=metrics.avg_capacity,
             epsilon_last=eps,
             duration_seconds=duration,
+            # Learning diagnostics
+            loss_avg=metrics.loss_avg if metrics.learning_steps > 0 else "",
+            mean_q_avg=metrics.mean_q_avg if metrics.learning_steps > 0 else "",
+            max_q_avg=metrics.max_q_avg if metrics.learning_steps > 0 else "",
+            td_error_avg=metrics.td_error_avg if metrics.learning_steps > 0 else "",
+            grad_norm_avg=metrics.grad_norm_avg if metrics.learning_steps > 0 else "",
+            learning_steps=metrics.learning_steps,
+            memory_size=memory_size,
+            success_rate=metrics.success_rate,
         )
         
         # Console output

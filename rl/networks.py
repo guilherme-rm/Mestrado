@@ -18,11 +18,11 @@ class DNN(nn.Module):
         input_dim = opt.nagents
         output_dim = scenario.BS_Number() * sce.nChannel
 
-        # Network architecture matching original UARA-DRL: 64 → 32 → 32
-        self.input_layer = nn.Linear(input_dim, 64)
-        self.middle1_layer = nn.Linear(64, 32)
-        self.middle2_layer = nn.Linear(32, 32)
-        self.output_layer = nn.Linear(32, output_dim)
+        # Network architecture matching original UARA-DRL: 128 → 64 → 64
+        self.input_layer = nn.Linear(input_dim, 128)
+        self.middle1_layer = nn.Linear(128, 64)
+        self.middle2_layer = nn.Linear(64, 64)
+        self.output_layer = nn.Linear(64, output_dim)
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         # Ensure input tensor is float32 for compatibility with linear layers

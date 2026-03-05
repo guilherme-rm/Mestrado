@@ -1,15 +1,15 @@
 {  
    "//": "python main.py -c1 Config/config_1.json -c2 Config/config_2.json",
    "nagents": 30,
-   "capacity": 500,
-   "learning_rate": 0.01,
+   "capacity": 10000,
+   "learning_rate": 0.001,
    "momentum": 0.005,
    "tau": 0.005,
-   "batch_size": 8,
+   "batch_size": 64,
    "gamma": 0.9,
    
    "min_memory_for_learning": 8,
-   "action_strategy": "boltzmann",
+   "action_strategy": "langevin",
    
    "epsilon_policy": "linear_increasing",
    "eps_min": 0.0,

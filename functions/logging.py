@@ -83,16 +83,39 @@ class CSVLogger:
 
 
 class EpisodeMetricsLogger:
-    # Updated HEADER to include 'return_val'
+    """Logs episode-level metrics for training analysis and diagnosis.
+    
+    Diagnostic metrics included:
+    - reward_min/max/std: Reward distribution analysis per episode
+    - loss_avg: Average training loss (model learning rate)
+    - mean_q_avg: Average Q-value estimates (value drift detection)
+    - td_error_avg: TD error magnitude (learning signal quality)
+    - grad_norm_avg: Gradient norm (vanishing/exploding gradient detection)
+    - learning_steps: Number of actual gradient updates (learning activity)
+    - memory_size: Replay buffer fill level (experience accumulation)
+    - success_rate: Fraction of steps meeting QoS threshold
+    """
     HEADER = [
         "episode",
         "steps",
         "return_val",
         "avg_reward",
+        "reward_min",
+        "reward_max",
+        "reward_std",
         "qos_rate",
         "capacity_mean",
         "epsilon_last",
         "duration_seconds",
+        # Learning diagnostics
+        "loss_avg",
+        "mean_q_avg",
+        "max_q_avg",
+        "td_error_avg",
+        "grad_norm_avg",
+        "learning_steps",
+        "memory_size",
+        "success_rate",
     ]
 
     def __init__(self, run_dir: RunDirectoryManager):
@@ -107,7 +130,20 @@ class EpisodeMetricsLogger:
 
 
 class StepMetricsLogger:
-    # (Implementation remains the same)
+    """Logs step-level metrics for detailed training diagnosis.
+    
+    Diagnostic metrics included:
+    - loss: Training loss (should decrease then stabilize)
+    - mean_q: Average Q-values (monitor for drift/explosion)
+    - max_q: Maximum Q-value (detect divergence)
+    - min_q: Minimum Q-value (detect collapse)
+    - q_std: Q-value standard deviation (action differentiation)
+    - td_error: Temporal difference error (learning signal strength)
+    - grad_norm: Gradient norm (detect vanishing/exploding gradients)
+    - target_q_mean: Target network Q-values (target stability)
+    - memory_size: Replay buffer fill level
+    - did_learn: Whether learning occurred this step
+    """
     HEADER = [
         "global_step",
         "episode",
@@ -116,6 +152,17 @@ class StepMetricsLogger:
         "mean_reward",
         "qos_mean",
         "capacity_sum_mbps",
+        # Learning diagnostics
+        "loss",
+        "mean_q",
+        "max_q",
+        "min_q",
+        "q_std",
+        "td_error",
+        "grad_norm",
+        "target_q_mean",
+        "memory_size",
+        "did_learn",
     ]
 
     def __init__(self, run_dir: RunDirectoryManager, throttle: Optional[int] = 1):
