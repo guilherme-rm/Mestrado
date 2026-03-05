@@ -316,7 +316,6 @@ class ActionSelector:
             noise = torch.randn_like(log_probs)
             log_probs = log_probs + (step_size / 2) * score + (step_size ** 0.5) * noise
         
-        # Final sample from the refined distribution
         probs = torch.softmax(log_probs, dim=-1)
         return int(torch.multinomial(probs, 1).item())
     
