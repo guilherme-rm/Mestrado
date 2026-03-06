@@ -17,6 +17,7 @@ from rl.training import (
 )
 from functions.live_plot import RealTimeStepPlotter
 from functions.network_metrics_plot import NetworkMetricsPlotter
+from functions.telecom_network_plot import TelecomNetworkPlotter
 from functions.logging import (
     RunDirectoryManager,
     save_config,
@@ -33,6 +34,9 @@ from constants import (
     NETWORK_PLOT_FILENAME,
     EPS_MAX_DECAY,
     EPS_MAX_MIN,
+    TELECOM_PLOT_ENABLED,
+    TELECOM_PLOT_INTERVAL,
+    TELECOM_PLOT_FILENAME,
 )
 
 
@@ -430,6 +434,7 @@ class Trainer:
         
         self.plotter = self._create_plotter()
         self.network_plotter = self._create_network_plotter()
+        self.telecom_plotter = self._create_telecom_plotter()
         self.ep_logger = EpisodeMetricsLogger(run_dir)
         self.step_logger = StepMetricsLogger(run_dir, throttle=config.step_log_throttle)
         
@@ -457,6 +462,19 @@ class Trainer:
             out_path=str(plot_path),
             smooth_window=NETWORK_PLOT_SMOOTH_WINDOW,
             x_axis_mode=self.config.plot_x_axis,
+        )
+    
+    def _create_telecom_plotter(self) -> TelecomNetworkPlotter:
+        """Initialize the telecom network topology plotter."""
+        plot_path = self.run_dir.subpath(TELECOM_PLOT_FILENAME)
+        return TelecomNetworkPlotter(
+            scenario=self.scenario,
+            agents=self.agents,
+            enabled=TELECOM_PLOT_ENABLED and self.config.enable_plot,
+            plot_interval=TELECOM_PLOT_INTERVAL,
+            out_path=str(plot_path),
+            show_coverage=True,
+            show_connections=True,
         )
     
     def train(self) -> Dict[str, List[float]]:
@@ -500,6 +518,9 @@ class Trainer:
         # Episode complete
         ep_metrics = self.episode_runner.metrics
         self.metrics_aggregator.record_episode(ep_metrics)
+        
+        # Update telecom network plotter at end of episode
+        self._update_telecom_plotter(episode)
         
         ep_duration = time.time() - ep_start
         self._log_episode(episode, ep_metrics, ep_duration)
@@ -618,6 +639,22 @@ class Trainer:
         interval = self.config.checkpoint_interval
         return interval and (episode + 1) % interval == 0
     
+    def _update_telecom_plotter(self, episode: int):
+        """Update the telecom network topology plot at end of episode."""
+        # Extract current actions as list of integers
+        actions = None
+        if self.episode_runner.ctx is not None and self.episode_runner.ctx.actions is not None:
+            try:
+                actions = [int(a.item()) for a in self.episode_runner.ctx.actions]
+            except Exception:
+                actions = [int(a) for a in self.episode_runner.ctx.actions]
+        
+        self.telecom_plotter.update(
+            step=episode,  # Use episode as the counter since we update per episode
+            episode=episode,
+            actions=actions,
+        )
+    
     def _finalize(self):
         """Clean up and write final outputs."""
         total_duration = time.time() - self.start_time
@@ -625,6 +662,7 @@ class Trainer:
         
         self.plotter.close()
         self.network_plotter.close()
+        self.telecom_plotter.close()
         self.ep_logger.close()
         self.step_logger.close()
         
