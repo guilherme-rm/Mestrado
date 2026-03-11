@@ -11,6 +11,7 @@ from numpy import pi
 import torch
 
 from constants import GRAD_CLIP_VALUE
+from telecom.mobility import MobilityManager
 
 
 @dataclass
@@ -47,14 +48,42 @@ from .memory import ReplayMemory, Transition
 from .networks import DNN
 
 class LocationManager:
-    """Handles agent location initialization and access."""
+    """Handles agent location initialization and updates (with optional mobility)."""
     
-    def __init__(self, sce, scenario, device: torch.device):
+    def __init__(
+        self,
+        sce,
+        scenario,
+        device: torch.device,
+        ue_index: int = 0,
+        mobility_manager: Optional[MobilityManager] = None,
+    ):
+        """Initialize location manager.
+        
+        Args:
+            sce: Scenario configuration object.
+            scenario: Scenario instance with BS locations.
+            device: PyTorch device.
+            ue_index: Index of this UE for mobility manager lookup.
+            mobility_manager: Optional MobilityManager for position updates.
+        """
         self.sce = sce
+        self.scenario = scenario
         self.device = device
-        self._location = self._initialize_location(scenario)
+        self.ue_index = ue_index
+        self._mobility_manager = mobility_manager
+        
+        # Initialize position - if mobility manager exists, it handles positions
+        if self._mobility_manager is not None:
+            # Let mobility manager provide position
+            pos = self._mobility_manager.get_ue_position(ue_index)
+            self._location = torch.tensor(pos, device=self.device, dtype=torch.float32)
+        else:
+            # Legacy initialization for static UEs
+            self._location = self._initialize_location(scenario)
     
     def _initialize_location(self, scenario) -> torch.Tensor:
+        """Initialize UE location within MBS coverage (legacy mode)."""
         Loc_MBS, _, _ = scenario.BS_Location()
         Loc_agent = np.zeros(2)
         LocM = choice(Loc_MBS)
@@ -64,9 +93,21 @@ class LocationManager:
         Loc_agent[1] = LocM[1] + r * np.sin(theta)
         return torch.tensor(Loc_agent, device=self.device, dtype=torch.float32)
     
+    def update_location(self) -> None:
+        """Update location from mobility manager if available."""
+        if self._mobility_manager is not None:
+            pos = self._mobility_manager.get_ue_position(self.ue_index)
+            self._location = torch.tensor(pos, device=self.device, dtype=torch.float32)
+    
     @property
     def location(self) -> torch.Tensor:
+        """Get current UE location as tensor."""
         return self._location
+    
+    @property
+    def mobility_enabled(self) -> bool:
+        """Check if mobility is enabled for this UE."""
+        return self._mobility_manager is not None
     
 class RewardCalculator:
     """Encapsulates reward computation logic."""
@@ -350,14 +391,38 @@ class ActionSelector:
         
 class Agent:
     
-    def __init__(self, opt, sce, scenario, index: int, device: torch.device):
+    def __init__(
+        self,
+        opt,
+        sce,
+        scenario,
+        index: int,
+        device: torch.device,
+        mobility_manager: Optional[MobilityManager] = None,
+    ):
+        """Initialize an agent (UE) with optional mobility support.
+        
+        Args:
+            opt: Optimization/training configuration.
+            sce: Scenario configuration.
+            scenario: Scenario instance.
+            index: Agent/UE index.
+            device: PyTorch device.
+            mobility_manager: Optional MobilityManager for UE mobility.
+        """
         self.opt = opt
         self.sce = sce
         self.id = index
         self.device = device
         
         # Composed components
-        self._location_manager = LocationManager(sce, scenario, device)
+        self._location_manager = LocationManager(
+            sce,
+            scenario,
+            device,
+            ue_index=index,
+            mobility_manager=mobility_manager,
+        )
         self._reward_calculator = RewardCalculator(sce, opt, device)
         self._action_selector = ActionSelector(
             strategy=getattr(opt, "action_strategy", "epsilon_greedy")
@@ -391,6 +456,15 @@ class Agent:
 
     def Get_Location(self) -> torch.Tensor:
         return self.location
+    
+    def update_location(self) -> None:
+        """Update UE location from mobility manager (called at episode start)."""
+        self._location_manager.update_location()
+    
+    @property
+    def mobility_enabled(self) -> bool:
+        """Check if mobility is enabled for this UE."""
+        return self._location_manager.mobility_enabled
 
     def Select_Action(self, state: torch.Tensor, scenario, eps: float) -> torch.Tensor:
         with torch.no_grad():
