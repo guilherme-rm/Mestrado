@@ -16,6 +16,7 @@ from rl.training import (
     create_agents,
     initialize_episode,
     should_terminate,
+    GNNObservationManager,
 )
 from functions.live_plot import RealTimeStepPlotter
 from functions.network_metrics_plot import NetworkMetricsPlotter
@@ -39,6 +40,7 @@ from constants import (
     TELECOM_PLOT_ENABLED,
     TELECOM_PLOT_INTERVAL,
     TELECOM_PLOT_FILENAME,
+    GNN_ENABLED,
 )
 
 
@@ -134,16 +136,21 @@ class EpsilonScheduler:
     @classmethod
     def from_opt(cls, opt) -> "EpsilonScheduler":
         """Create scheduler from opt DotDic object."""
+        # Helper to handle None values from DotDic
+        def get_or_default(name, default):
+            val = getattr(opt, name, None)
+            return default if val is None else val
+        
         return cls(
-            policy=getattr(opt, "epsilon_policy", "exponential_decay"),
-            eps_min=getattr(opt, "eps_min", 0.0),
-            eps_max=getattr(opt, "eps_max", 0.9),
-            eps_increment=getattr(opt, "eps_increment", 0.003),
-            eps_start=getattr(opt, "eps_start", 1.0),
-            eps_end=getattr(opt, "eps_end", 0.05),
-            eps_decay_steps=getattr(opt, "eps_decay_steps", 10000),
-            nepisodes=getattr(opt, "nepisodes", 1000),
-            nsteps=getattr(opt, "nsteps", 500),
+            policy=get_or_default("epsilon_policy", "exponential_decay"),
+            eps_min=get_or_default("eps_min", 0.0),
+            eps_max=get_or_default("eps_max", 0.9),
+            eps_increment=get_or_default("eps_increment", 0.003),
+            eps_start=get_or_default("eps_start", 1.0),
+            eps_end=get_or_default("eps_end", 0.05),
+            eps_decay_steps=get_or_default("eps_decay_steps", 10000),
+            nepisodes=get_or_default("nepisodes", 1000),
+            nsteps=get_or_default("nsteps", 500),
             eps_max_decay=EPS_MAX_DECAY,
             eps_max_min=EPS_MAX_MIN,
         )
@@ -309,6 +316,7 @@ class EpisodeRunner:
         config: TrainingConfig,
         device: torch.device,
         action_tail_len: int = 10,
+        gnn_manager = None,
     ):
         self.agents = agents
         self.scenario = scenario
@@ -316,6 +324,7 @@ class EpisodeRunner:
         self.device = device
         self.action_tail_len = action_tail_len
         self.state_target = torch.ones(config.nagents, device=device)
+        self.gnn_manager = gnn_manager
         
         # Episode state (reset each episode)
         self.ctx = None
@@ -335,14 +344,28 @@ class EpisodeRunner:
         ]
         self.step = 0
         self._terminated_early = False
+        
+        # GNN observation storage (current and next)
+        self._gnn_obs = None
+        self._gnn_obs_next = None
     
     def run_step(self, epsilon: float) -> Dict[str, float]:
         """Execute a single step and return step metrics."""
         self.last_epsilon = epsilon
         
-        # Select actions
+        # Get GNN observations if enabled
+        gnn_obs = None
+        if self.gnn_manager and self.gnn_manager.enabled:
+            gnn_obs = self.gnn_manager.encode(
+                self.agents, 
+                self.ctx.actions if self.step > 0 else None
+            )
+            self._gnn_obs = gnn_obs
+        
+        # Select actions (with GNN observations if available)
         self.ctx.actions = select_actions(
-            self.agents, self.ctx.state, self.scenario, epsilon
+            self.agents, self.ctx.state, self.scenario, epsilon,
+            gnn_observations=gnn_obs,
         )
         
         # Record actions for debugging
@@ -373,6 +396,14 @@ class EpisodeRunner:
         Returns:
             Aggregated training metrics if learning occurred, None otherwise.
         """
+        # Get next GNN observations for storing transitions
+        gnn_obs_next = None
+        if self.gnn_manager and self.gnn_manager.enabled:
+            gnn_obs_next = self.gnn_manager.encode(
+                self.agents,
+                self.ctx.actions,  # Use current actions for next state graph
+            )
+        
         return store_and_learn(
             self.agents,
             self.ctx.state,
@@ -382,6 +413,8 @@ class EpisodeRunner:
             self.scenario,
             self.step,
             opt,
+            gnn_obs=self._gnn_obs,
+            gnn_obs_next=gnn_obs_next,
         )
     
     def advance(self):
@@ -422,6 +455,7 @@ class Trainer:
         run_dir: RunDirectoryManager,
         device: torch.device,
         mobility_manager: Optional[MobilityManager] = None,
+        gnn_manager: GNNObservationManager = None,
     ):
         self.agents = agents
         self.scenario = scenario
@@ -430,10 +464,11 @@ class Trainer:
         self.run_dir = run_dir
         self.device = device
         self.mobility_manager = mobility_manager
+        self.gnn_manager = gnn_manager
         
         # Components
         self.epsilon_scheduler = EpsilonScheduler.from_opt(opt)
-        self.episode_runner = EpisodeRunner(agents, scenario, config, device)
+        self.episode_runner = EpisodeRunner(agents, scenario, config, device, gnn_manager=gnn_manager)
         self.metrics_aggregator = MetricsAggregator()
         
         self.plotter = self._create_plotter()
@@ -718,6 +753,7 @@ class ExperimentManager:
         self.agents = None
         self.config = None
         self.mobility_manager = None
+        self.gnn_manager = None
     
     def setup(self):
         """Initialize all components for a trial."""
@@ -738,14 +774,26 @@ class ExperimentManager:
         else:
             self.mobility_manager = None
         
-        # Create agents with mobility manager
+        # Create GNN manager if enabled
+        self.gnn_manager = GNNObservationManager(
+            scenario=self.scenario,
+            device=self.device,
+            enabled=GNN_ENABLED,
+        )
+        
+        # Create agents (with mobility and GNN support)
+        gnn_input_dim = self.gnn_manager.output_dim if self.gnn_manager.enabled else None
         self.agents = create_agents(
             self.opt,
             self.sce,
             self.scenario,
             self.device,
             mobility_manager=self.mobility_manager,
+            gnn_input_dim=gnn_input_dim,
         )
+        
+        if self.gnn_manager.enabled:
+            print(f"GNN enabled: input_dim={gnn_input_dim}")
     
     def run(self) -> Dict[str, List[float]]:
         """Execute training and return metrics."""
@@ -757,6 +805,7 @@ class ExperimentManager:
             run_dir=self.run_dir,
             device=self.device,
             mobility_manager=self.mobility_manager,
+            gnn_manager=self.gnn_manager,
         )
         return trainer.train()
     

@@ -25,3 +25,22 @@ TELECOM_PLOT_INTERVAL = 1
 TELECOM_PLOT_FILENAME = "network_topology.png"
 TELECOM_PLOT_FIGSIZE = (12, 10)
 TELECOM_PLOT_DPI = 100
+
+
+# Set to True to use GNN-based observation encoding, False for original flat obs
+GNN_ENABLED = True
+
+# GNN architecture parameters
+GNN_HIDDEN_DIM = 64
+GNN_OUTPUT_DIM = 64
+GNN_NUM_LAYERS = 2
+GNN_USE_ATTENTION = False
+GNN_DROPOUT = 0.1
+
+# Observation mode: "replace" (GNN only) or "augment" (GNN + flat obs)
+GNN_OBSERVATION_MODE = "replace"
+
+# Graph construction options
+GNN_INCLUDE_INTERFERENCE_EDGES = True
+GNN_INCLUDE_POTENTIAL_LINKS = True
+GNN_HETEROGENEOUS = False  # Use separate params for UE/BS nodes
