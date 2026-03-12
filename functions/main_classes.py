@@ -7,6 +7,8 @@ from typing import List, Dict, Optional, Any
 import torch
 
 from telecom.scenario import Scenario
+from telecom.mobility import MobilityManager, MOBILITY_ENABLED
+from telecom.interference import compute_interference_graph
 from rl.training import (
     select_actions,
     compute_rewards_and_next_state,
@@ -419,6 +421,7 @@ class Trainer:
         opt: Any,  # Original opt for store_and_learn compatibility
         run_dir: RunDirectoryManager,
         device: torch.device,
+        mobility_manager: Optional[MobilityManager] = None,
     ):
         self.agents = agents
         self.scenario = scenario
@@ -426,6 +429,7 @@ class Trainer:
         self.opt = opt
         self.run_dir = run_dir
         self.device = device
+        self.mobility_manager = mobility_manager
         
         # Components
         self.epsilon_scheduler = EpsilonScheduler.from_opt(opt)
@@ -475,6 +479,9 @@ class Trainer:
             out_path=str(plot_path),
             show_coverage=True,
             show_connections=True,
+            mobility_manager=self.mobility_manager,
+            show_hotspots=MOBILITY_ENABLED,
+            show_interference=True,
         )
     
     def train(self) -> Dict[str, List[float]]:
@@ -495,6 +502,13 @@ class Trainer:
         """Execute a single training episode."""
         ep_start = time.time()
         self.episode_runner.reset()
+        
+        # Update mobility at episode start (positions update, hotspots age/respawn)
+        if self.mobility_manager is not None:
+            self.mobility_manager.update_episode()
+            # Update agent locations from mobility manager
+            for agent in self.agents:
+                agent.update_location()
         
         # Set current episode for linear increasing epsilon policy
         self.epsilon_scheduler.set_episode(episode)
@@ -649,10 +663,22 @@ class Trainer:
             except Exception:
                 actions = [int(a) for a in self.episode_runner.ctx.actions]
         
+        # Compute interference edges for visualization
+        interference_edges = []
+        if actions:
+            # Extract UE positions from agents
+            ue_positions = [agent.location.cpu().numpy() for agent in self.agents]
+            interference_edges = compute_interference_graph(
+                ue_positions=ue_positions,
+                actions=actions,
+                scenario=self.scenario,
+            )
+        
         self.telecom_plotter.update(
             step=episode,  # Use episode as the counter since we update per episode
             episode=episode,
             actions=actions,
+            interference_edges=interference_edges,
         )
     
     def _finalize(self):
@@ -691,6 +717,7 @@ class ExperimentManager:
         self.run_dir = None
         self.agents = None
         self.config = None
+        self.mobility_manager = None
     
     def setup(self):
         """Initialize all components for a trial."""
@@ -702,8 +729,23 @@ class ExperimentManager:
         save_config(self.run_dir, self.opt, self.sce)
         save_environment_snapshot(self.run_dir)
         
-        # Create agents
-        self.agents = create_agents(self.opt, self.sce, self.scenario, self.device)
+        # Create mobility manager if enabled
+        if MOBILITY_ENABLED:
+            self.mobility_manager = MobilityManager(
+                scenario=self.scenario,
+                num_ues=self.opt.nagents,
+            )
+        else:
+            self.mobility_manager = None
+        
+        # Create agents with mobility manager
+        self.agents = create_agents(
+            self.opt,
+            self.sce,
+            self.scenario,
+            self.device,
+            mobility_manager=self.mobility_manager,
+        )
     
     def run(self) -> Dict[str, List[float]]:
         """Execute training and return metrics."""
@@ -714,6 +756,7 @@ class ExperimentManager:
             opt=self.opt,
             run_dir=self.run_dir,
             device=self.device,
+            mobility_manager=self.mobility_manager,
         )
         return trainer.train()
     

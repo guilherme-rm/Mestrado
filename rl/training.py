@@ -110,9 +110,35 @@ def should_terminate(state: torch.Tensor, target_state: torch.Tensor) -> bool:
     return bool(torch.all(state.eq(target_state)))
 
 
-def create_agents(opt, sce, scenario, device) -> List[Agent]:
+def create_agents(
+    opt,
+    sce,
+    scenario,
+    device,
+    mobility_manager=None,
+) -> List[Agent]:
+    """Create agents (UEs) for the simulation.
+    
+    Args:
+        opt: Training configuration.
+        sce: Scenario configuration.
+        scenario: Scenario instance.
+        device: PyTorch device.
+        mobility_manager: Optional MobilityManager for UE mobility support.
+        
+    Returns:
+        List of Agent instances.
+    """
     return [
-        Agent(opt, sce, scenario, index=i, device=device) for i in range(opt.nagents)
+        Agent(
+            opt,
+            sce,
+            scenario,
+            index=i,
+            device=device,
+            mobility_manager=mobility_manager,
+        )
+        for i in range(opt.nagents)
     ]
 
 
