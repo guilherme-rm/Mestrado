@@ -399,8 +399,9 @@ class Agent:
         index: int,
         device: torch.device,
         mobility_manager: Optional[MobilityManager] = None,
+        input_dim: int = None,
     ):
-        """Initialize an agent (UE) with optional mobility support.
+        """Initialize an agent (UE) with optional mobility and GNN support.
         
         Args:
             opt: Optimization/training configuration.
@@ -409,6 +410,7 @@ class Agent:
             index: Agent/UE index.
             device: PyTorch device.
             mobility_manager: Optional MobilityManager for UE mobility.
+            input_dim: Optional input dimension for GNN mode.
         """
         self.opt = opt
         self.sce = sce
@@ -431,17 +433,18 @@ class Agent:
         # Memory
         self.memory = ReplayMemory(opt.capacity)
         
-        # Networks
-        self.model_policy = DNN(opt, sce, scenario).to(device)
-        self.model_target = DNN(opt, sce, scenario).to(device)
+        # Networks (pass input_dim for GNN mode)
+        self.model_policy = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
+        self.model_target = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
         self.model_target.load_state_dict(self.model_policy.state_dict())
         self.model_target.eval()
         
-        # Optimizer component
+        # Optimizer component (with default momentum if not specified)
+        momentum = opt.momentum if opt.momentum is not None else 0.0
         self.optimizer = optim.RMSprop(
             params=self.model_policy.parameters(),
             lr=opt.learning_rate,
-            momentum=opt.momentum,
+            momentum=momentum,
         )
         self._dqn_optimizer = DQNOptimizer(
             self.model_policy, self.model_target, self.optimizer, opt, device
