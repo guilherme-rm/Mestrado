@@ -69,7 +69,7 @@ class GNNObservationEncoder(nn.Module):
                 hidden_dim=gnn_hidden_dim,
                 output_dim=gnn_output_dim,
                 num_layers=gnn_num_layers,
-            )
+            ).to(device)
         else:
             gnn_type = "gat" if use_attention else conv_type
             self.gnn = GNNEncoder(
@@ -78,7 +78,7 @@ class GNNObservationEncoder(nn.Module):
                 output_dim=gnn_output_dim,
                 num_layers=gnn_num_layers,
                 conv_type=gnn_type,
-            )
+            ).to(device)
         
         self._output_dim = gnn_output_dim
     
