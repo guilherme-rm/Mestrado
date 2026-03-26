@@ -29,6 +29,7 @@ from functions.logging import (
     StepMetricsLogger,
     checkpoint_agents,
     write_summary,
+    write_experiment_summary,
 )
 from constants import (
     NETWORK_PLOT_ENABLED,
@@ -272,16 +273,81 @@ class EpisodeMetrics:
 class MetricsAggregator:
     """Aggregates metrics across all episodes."""
     
-    def __init__(self):
+    def __init__(self, convergence_window: int = 50, convergence_threshold: float = 0.01):
         self.avg_rewards: List[float] = []
         self.returns: List[float] = []
         self.qos_rates: List[float] = []
+        
+        # Best episode tracking
+        self.best_episode: Optional[Dict[str, Any]] = None
+        self.best_return: float = float('-inf')
+        
+        # Convergence tracking
+        self.convergence_window = convergence_window
+        self.convergence_threshold = convergence_threshold
+        self.convergence_episode: Optional[int] = None
+        
+        # Learning diagnostics tracking
+        self.losses: List[float] = []
+        self.mean_qs: List[float] = []
+        self.td_errors: List[float] = []
+        self.grad_norms: List[float] = []
     
     def record_episode(self, metrics: EpisodeMetrics):
         """Record metrics from a completed episode."""
         self.avg_rewards.append(metrics.avg_reward)
         self.returns.append(metrics.return_total)
         self.qos_rates.append(metrics.qos_rate)
+        
+        # Track best episode (by return)
+        episode_idx = len(self.returns) - 1
+        if metrics.return_total > self.best_return:
+            self.best_return = metrics.return_total
+            self.best_episode = {
+                "episode": episode_idx,
+                "return": metrics.return_total,
+                "avg_reward": metrics.avg_reward,
+                "qos_rate": metrics.qos_rate,
+                "steps": metrics.steps,
+            }
+        
+        # Check for convergence (return stabilization)
+        self._check_convergence(episode_idx)
+    
+    def record_learning_step(self, loss: Optional[float] = None, 
+                             mean_q: Optional[float] = None,
+                             td_error: Optional[float] = None,
+                             grad_norm: Optional[float] = None):
+        """Record learning diagnostics from a training step."""
+        if loss is not None:
+            self.losses.append(loss)
+        if mean_q is not None:
+            self.mean_qs.append(mean_q)
+        if td_error is not None:
+            self.td_errors.append(td_error)
+        if grad_norm is not None:
+            self.grad_norms.append(grad_norm)
+    
+    def _check_convergence(self, current_episode: int):
+        """Check if training has converged based on return stability."""
+        if self.convergence_episode is not None:
+            return  # Already converged
+        
+        if len(self.returns) < self.convergence_window * 2:
+            return  # Not enough data
+        
+        # Compare recent window to previous window
+        recent = self.returns[-self.convergence_window:]
+        previous = self.returns[-2*self.convergence_window:-self.convergence_window]
+        
+        recent_mean = sum(recent) / len(recent)
+        previous_mean = sum(previous) / len(previous)
+        
+        # Check if relative change is below threshold
+        if previous_mean != 0:
+            relative_change = abs(recent_mean - previous_mean) / abs(previous_mean)
+            if relative_change < self.convergence_threshold:
+                self.convergence_episode = current_episode - self.convergence_window
     
     def mean_last_k(self, data: List[float], k: int = 100) -> Optional[float]:
         """Compute mean of the last k values."""
@@ -296,6 +362,51 @@ class MetricsAggregator:
             "mean_last_100_return": self.mean_last_k(self.returns, k),
             "mean_last_100_qos": self.mean_last_k(self.qos_rates, k),
         }
+    
+    def get_final_metrics(self, k: int = 100) -> Dict[str, Any]:
+        """Get comprehensive final metrics for experiment summary."""
+        return {
+            "mean_reward": self.mean_last_k(self.avg_rewards, k),
+            "mean_return": self.mean_last_k(self.returns, k),
+            "mean_qos": self.mean_last_k(self.qos_rates, k),
+            "std_reward": self._std_last_k(self.avg_rewards, k),
+            "std_return": self._std_last_k(self.returns, k),
+            "std_qos": self._std_last_k(self.qos_rates, k),
+            "max_return": max(self.returns) if self.returns else None,
+            "min_return": min(self.returns) if self.returns else None,
+        }
+    
+    def get_best_episode(self) -> Optional[Dict[str, Any]]:
+        """Get information about the best performing episode."""
+        return self.best_episode
+    
+    def get_convergence_info(self) -> Dict[str, Any]:
+        """Get convergence detection information."""
+        return {
+            "converged": self.convergence_episode is not None,
+            "convergence_episode": self.convergence_episode,
+            "convergence_window": self.convergence_window,
+            "convergence_threshold": self.convergence_threshold,
+        }
+    
+    def get_learning_diagnostics(self, k: int = 100) -> Dict[str, Any]:
+        """Get learning diagnostics summary."""
+        return {
+            "final_loss": self.mean_last_k(self.losses, k),
+            "final_mean_q": self.mean_last_k(self.mean_qs, k),
+            "final_td_error": self.mean_last_k(self.td_errors, k),
+            "final_grad_norm": self.mean_last_k(self.grad_norms, k),
+            "total_learning_steps": len(self.losses),
+        }
+    
+    def _std_last_k(self, data: List[float], k: int = 100) -> Optional[float]:
+        """Compute standard deviation of the last k values."""
+        if not data or len(data) < 2:
+            return None
+        subset = data[-k:]
+        mean = sum(subset) / len(subset)
+        variance = sum((x - mean) ** 2 for x in subset) / len(subset)
+        return float(variance ** 0.5)
     
     def to_dict(self) -> Dict[str, List[float]]:
         """Export all metrics as a dictionary."""
@@ -452,6 +563,7 @@ class Trainer:
         scenario: Scenario,
         config: TrainingConfig,
         opt: Any,  # Original opt for store_and_learn compatibility
+        sce: Any,  # Scenario config for summary generation
         run_dir: RunDirectoryManager,
         device: torch.device,
         mobility_manager: Optional[MobilityManager] = None,
@@ -461,6 +573,7 @@ class Trainer:
         self.scenario = scenario
         self.config = config
         self.opt = opt
+        self.sce = sce
         self.run_dir = run_dir
         self.device = device
         self.mobility_manager = mobility_manager
@@ -727,14 +840,27 @@ class Trainer:
         self.ep_logger.close()
         self.step_logger.close()
         
-        # Write summary
-        summary = {
-            "episodes": self.config.nepisodes,
-            "total_steps": self.total_steps,
-            "total_training_seconds": total_duration,
-            **self.metrics_aggregator.get_summary(k=100),
+        # Gather feature flags
+        feature_flags = {
+            "gnn_enabled": self.gnn_manager.enabled if self.gnn_manager else False,
+            "mobility_enabled": self.mobility_manager is not None,
+            "gnn_observation_mode": getattr(self.gnn_manager, 'observation_mode', None) if self.gnn_manager else None,
         }
-        write_summary(self.run_dir, summary)
+        
+        # Write comprehensive experiment summary
+        write_experiment_summary(
+            run_dir=self.run_dir,
+            opt=self.opt,
+            sce=self.sce,
+            total_episodes=self.config.nepisodes,
+            total_steps=self.total_steps,
+            total_duration_seconds=total_duration,
+            final_metrics=self.metrics_aggregator.get_final_metrics(k=100),
+            best_episode=self.metrics_aggregator.get_best_episode(),
+            learning_diagnostics=self.metrics_aggregator.get_learning_diagnostics(k=100),
+            convergence_info=self.metrics_aggregator.get_convergence_info(),
+            feature_flags=feature_flags,
+        )
         
         # Final checkpoint
         checkpoint_agents(self.run_dir, self.agents, self.config.nepisodes, tag="final")
@@ -802,6 +928,7 @@ class ExperimentManager:
             scenario=self.scenario,
             config=self.config,
             opt=self.opt,
+            sce=self.sce,
             run_dir=self.run_dir,
             device=self.device,
             mobility_manager=self.mobility_manager,

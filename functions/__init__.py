@@ -15,6 +15,7 @@ from .logging import (  # noqa: F401
     StepMetricsLogger,
     checkpoint_agents,
     write_summary,
+    write_experiment_summary,
 )
 
 __all__ = [
@@ -27,4 +28,5 @@ __all__ = [
     "StepMetricsLogger",
     "checkpoint_agents",
     "write_summary",
+    "write_experiment_summary",
 ]
