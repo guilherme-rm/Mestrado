@@ -1,0 +1,35 @@
+{
+   "_name": "Large training config - 120 agents",
+   "nagents": 120,
+   "capacity": 50000,
+   "learning_rate": 0.0005,
+   "momentum": 0.005,
+   "tau": 0.005,
+   "batch_size": 256,
+   "gamma": 0.9,
+   
+   "min_memory_for_learning": 32,
+   "action_strategy": "langevin",
+   
+   "epsilon_policy": "linear_increasing",
+   "eps_min": 0.0,
+   "eps_max": 0.9,
+   "eps_increment": 0.001,
+   "eps_start": 1.0,
+   "eps_end": 0.05,
+   "eps_decay_steps": 200000,
+   
+   "nepisodes": 2000,
+   "nsteps": 150,
+   "nupdate": 50,
+   
+   "early_termination": true,
+   "cuda": 0,
+   
+   "enable_plot": true,
+   "plot_interval": 200,
+   "plot_smooth_window": 200,
+   "plot_x_axis": "episodes",
+   "step_log_throttle": 20,
+   "checkpoint_interval": 200
+}

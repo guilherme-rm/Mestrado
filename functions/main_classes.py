@@ -21,6 +21,7 @@ from rl.training import (
 from functions.live_plot import RealTimeStepPlotter
 from functions.network_metrics_plot import NetworkMetricsPlotter
 from functions.telecom_network_plot import TelecomNetworkPlotter
+from functions.resource_metrics_plot import ResourceMetricsPlotter
 from functions.logging import (
     RunDirectoryManager,
     save_config,
@@ -42,8 +43,12 @@ from constants import (
     TELECOM_PLOT_INTERVAL,
     TELECOM_PLOT_FILENAME,
     GNN_ENABLED,
+    RESOURCE_PLOT_ENABLED,
+    RESOURCE_PLOT_INTERVAL,
+    RESOURCE_PLOT_SMOOTH_WINDOW,
+    RESOURCE_PLOT_FILENAME,
+    DEFERRED_PLOTTING
 )
-
 
 @dataclass
 class TrainingConfig:
@@ -587,6 +592,7 @@ class Trainer:
         self.plotter = self._create_plotter()
         self.network_plotter = self._create_network_plotter()
         self.telecom_plotter = self._create_telecom_plotter()
+        self.resource_plotter = self._create_resource_plotter()
         self.ep_logger = EpisodeMetricsLogger(run_dir)
         self.step_logger = StepMetricsLogger(run_dir, throttle=config.step_log_throttle)
         
@@ -603,6 +609,7 @@ class Trainer:
             out_path=str(plot_path),
             smooth_window=self.config.plot_smooth_window,
             x_axis_mode=self.config.plot_x_axis,
+            deferred=DEFERRED_PLOTTING,
         )
     
     def _create_network_plotter(self) -> NetworkMetricsPlotter:
@@ -614,6 +621,7 @@ class Trainer:
             out_path=str(plot_path),
             smooth_window=NETWORK_PLOT_SMOOTH_WINDOW,
             x_axis_mode=self.config.plot_x_axis,
+            deferred=DEFERRED_PLOTTING,
         )
     
     def _create_telecom_plotter(self) -> TelecomNetworkPlotter:
@@ -630,6 +638,19 @@ class Trainer:
             mobility_manager=self.mobility_manager,
             show_hotspots=MOBILITY_ENABLED,
             show_interference=True,
+            deferred=DEFERRED_PLOTTING,
+        )
+    
+    def _create_resource_plotter(self) -> ResourceMetricsPlotter:
+        """Initialize the resource metrics plotter."""
+        plot_path = self.run_dir.subpath(RESOURCE_PLOT_FILENAME)
+        return ResourceMetricsPlotter(
+            enabled=RESOURCE_PLOT_ENABLED and self.config.enable_plot,
+            plot_interval=RESOURCE_PLOT_INTERVAL,
+            out_path=str(plot_path),
+            smooth_window=RESOURCE_PLOT_SMOOTH_WINDOW,
+            x_axis_mode=self.config.plot_x_axis,
+            deferred=DEFERRED_PLOTTING,
         )
     
     def train(self) -> Dict[str, List[float]]:
@@ -744,6 +765,9 @@ class Trainer:
                 target_q_mean=train_metrics.get("target_q_mean"),
                 td_error=train_metrics.get("td_error"),
             )
+        
+        # Update resource metrics plotter (samples CPU/GPU automatically)
+        self.resource_plotter.update(step=self.total_steps)
     
     def _log_episode(self, episode: int, metrics: EpisodeMetrics, duration: float):
         """Log episode-level metrics including learning diagnostics."""
@@ -837,6 +861,7 @@ class Trainer:
         self.plotter.close()
         self.network_plotter.close()
         self.telecom_plotter.close()
+        self.resource_plotter.close()
         self.ep_logger.close()
         self.step_logger.close()
         
@@ -845,7 +870,11 @@ class Trainer:
             "gnn_enabled": self.gnn_manager.enabled if self.gnn_manager else False,
             "mobility_enabled": self.mobility_manager is not None,
             "gnn_observation_mode": getattr(self.gnn_manager, 'observation_mode', None) if self.gnn_manager else None,
+            "deferred_plotting": DEFERRED_PLOTTING,
         }
+        
+        # Add resource usage summary
+        resource_summary = self.resource_plotter.get_summary()
         
         # Write comprehensive experiment summary
         write_experiment_summary(
@@ -860,6 +889,7 @@ class Trainer:
             learning_diagnostics=self.metrics_aggregator.get_learning_diagnostics(k=100),
             convergence_info=self.metrics_aggregator.get_convergence_info(),
             feature_flags=feature_flags,
+            resource_usage=resource_summary,
         )
         
         # Final checkpoint
@@ -869,9 +899,10 @@ class Trainer:
 class ExperimentManager:
     """Manages experiment setup and execution."""
     
-    def __init__(self, opt, sce):
+    def __init__(self, opt, sce, run_name: Optional[str] = None):
         self.opt = opt
         self.sce = sce
+        self.run_name = run_name
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
         self.scenario = None
@@ -884,7 +915,10 @@ class ExperimentManager:
     def setup(self):
         """Initialize all components for a trial."""
         self.scenario = Scenario(self.sce)
-        self.run_dir = RunDirectoryManager(overwrite=False)
+        if self.run_name:
+            self.run_dir = RunDirectoryManager(prefix=self.run_name, overwrite=False)
+        else:
+            self.run_dir = RunDirectoryManager(overwrite=False)
         self.config = TrainingConfig.from_opt(self.opt)
         
         # Save configuration

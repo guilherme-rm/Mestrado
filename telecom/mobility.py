@@ -19,7 +19,7 @@ import numpy as np
 
 from telecom.scenario import Scenario
 
-MOBILITY_ENABLED = True
+MOBILITY_ENABLED = False
 
 UE_SPEED = 15.0  # meters per episode (increased for visible movement)
 UE_PAUSE_EPISODES = 0  # Episodes to pause at destination

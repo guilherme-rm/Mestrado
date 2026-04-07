@@ -16,10 +16,11 @@ import torch
 
 def _serialize_config(obj) -> Dict[str, Any]:
     # Helper to serialize configuration objects (like DotDic)
-    if hasattr(obj, "__dict__"):
-        return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+    # Check for dict first - DotDic is a dict subclass, so this catches it
     if isinstance(obj, dict):
         return dict(obj)
+    if hasattr(obj, "__dict__"):
+        return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
     return {}
 
 
@@ -218,6 +219,7 @@ def write_experiment_summary(
     learning_diagnostics: Optional[Dict[str, Any]] = None,
     convergence_info: Optional[Dict[str, Any]] = None,
     feature_flags: Optional[Dict[str, Any]] = None,
+    resource_usage: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Generate and save a comprehensive experiment summary for article comparison.
     
@@ -236,6 +238,7 @@ def write_experiment_summary(
         learning_diagnostics: Learning-related metrics (loss, Q-values, etc.)
         convergence_info: Convergence detection information
         feature_flags: Dictionary of feature flags (GNN, mobility, etc.)
+        resource_usage: Resource utilization summary (CPU/GPU usage)
     
     Returns:
         The complete summary dictionary
@@ -334,6 +337,9 @@ def write_experiment_summary(
         
         # ===== Learning Diagnostics =====
         "learning_diagnostics": learning_diagnostics or {},
+        
+        # ===== Resource Usage =====
+        "resource_usage": resource_usage or {},
     }
     
     # Write to file
@@ -357,6 +363,7 @@ def _build_compact_summary(full_summary: Dict[str, Any]) -> Dict[str, Any]:
     train = full_summary.get("training", {})
     perf = full_summary.get("performance", {})
     features = full_summary.get("features", {})
+    resources = full_summary.get("resource_usage", {})
     
     final = perf.get("final", {})
     best = perf.get("best_episode", {})
@@ -387,6 +394,11 @@ def _build_compact_summary(full_summary: Dict[str, Any]) -> Dict[str, Any]:
         "total_episodes": exp.get("total_episodes"),
         "total_steps": exp.get("total_steps"),
         "steps_per_second": exp.get("steps_per_second"),
+        
+        # Resource usage (key metrics only)
+        "cpu_mean_percent": resources.get("cpu_mean"),
+        "memory_max_percent": resources.get("memory_max"),
+        "gpu_utilization_mean": resources.get("gpu_utilization_mean"),
     }
 
 
