@@ -22,6 +22,7 @@ class RealTimeStepPlotter:
         out_path: str = "Result/training_progress.png",
         smooth_window: int = 100,
         x_axis_mode: str = "steps",
+        deferred: bool = False,
     ):
         self.enabled = enabled and plt is not None
         self.plot_interval = max(1, int(plot_interval))
@@ -30,6 +31,7 @@ class RealTimeStepPlotter:
         self.x_axis_mode = (
             x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
         )
+        self.deferred = deferred
 
         self.history: Dict[str, List[float]] = {
             "step": [],
@@ -71,6 +73,10 @@ class RealTimeStepPlotter:
 
         append_metric("capacity_sum_mbps", capacity_sum_mbps)
         append_metric("return", episode_return)
+
+        # Skip rendering if deferred mode
+        if self.deferred:
+            return
 
         # Throttle rendering
         if step % self.plot_interval != 0 and step > 0:
@@ -196,8 +202,15 @@ class RealTimeStepPlotter:
         except Exception as e:
             print(f"Warning: Failed to save plot: {e}")
 
+    def render_final(self):
+        """Force a final render (for deferred mode)."""
+        if self.enabled and self.history["step"]:
+            self._render()
+
     def close(self):
-        pass
+        """Clean up resources and render final plot if deferred."""
+        if self.enabled and self.deferred and self.history["step"]:
+            self._render()
 
 
 __all__ = ["RealTimeStepPlotter"]

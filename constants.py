@@ -26,6 +26,18 @@ TELECOM_PLOT_FILENAME = "network_topology.png"
 TELECOM_PLOT_FIGSIZE = (12, 10)
 TELECOM_PLOT_DPI = 100
 
+# Resource (CPU/GPU) metrics plotting configuration
+RESOURCE_PLOT_ENABLED = True
+RESOURCE_PLOT_INTERVAL = 50  # Sample every N steps
+RESOURCE_PLOT_SMOOTH_WINDOW = 100
+RESOURCE_PLOT_FILENAME = "resource_metrics.png"
+RESOURCE_PLOT_FIGSIZE = (12, 8)
+RESOURCE_PLOT_DPI = 120
+
+# Deferred plotting mode: if True, plots are only rendered at the end of training
+# instead of being updated during training. This reduces I/O overhead.
+DEFERRED_PLOTTING = True
+
 
 # Set to True to use GNN-based observation encoding, False for original flat obs
 GNN_ENABLED = True

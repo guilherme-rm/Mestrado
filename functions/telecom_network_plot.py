@@ -110,6 +110,7 @@ class TelecomNetworkPlotter:
         mobility_manager: Optional[MobilityManager] = None,
         show_hotspots: bool = True,
         show_interference: bool = True,
+        deferred: bool = False,
     ):
         """Initialize the telecom network plotter.
 
@@ -126,6 +127,7 @@ class TelecomNetworkPlotter:
             mobility_manager: MobilityManager for hotspot visualization (optional).
             show_hotspots: Whether to show hotspot attraction zones.
             show_interference: Whether to show interference edges between UEs.
+            deferred: If True, only render at the end (call render_final()).
         """
         self.scenario = scenario
         self.agents = agents
@@ -139,6 +141,7 @@ class TelecomNetworkPlotter:
         self.mobility_manager = mobility_manager
         self.show_hotspots = show_hotspots
         self.show_interference = show_interference
+        self.deferred = deferred
         
         # Cache for current connections (updated externally)
         self._current_actions: Optional[List[int]] = None
@@ -185,6 +188,8 @@ class TelecomNetworkPlotter:
                     self._ue_traces[i] = self._ue_traces[i][-UE_TRACE_LENGTH:]
         
         # Throttle rendering
+        if self.deferred:
+            return  # Skip rendering if deferred mode
         if step % self.plot_interval != 0 and step > 0:
             return
         
@@ -523,9 +528,15 @@ class TelecomNetworkPlotter:
         finally:
             plt.close(fig)
 
+    def render_final(self):
+        """Force a final render (for deferred mode)."""
+        if self.enabled:
+            self._render()
+
     def close(self):
-        """Clean up resources (placeholder for future use)."""
-        pass
+        """Clean up resources and render final plot if deferred."""
+        if self.enabled and self.deferred:
+            self._render()
 
 
 __all__ = ["TelecomNetworkPlotter"]

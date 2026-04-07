@@ -1,3 +1,7 @@
 torch
 matplotlib
 pytest
+psutil
+numpy
+pandas
+pyyaml

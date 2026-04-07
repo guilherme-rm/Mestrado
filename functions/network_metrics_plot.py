@@ -60,6 +60,7 @@ class NetworkMetricsPlotter:
         out_path: str = NETWORK_PLOT_FILENAME,
         smooth_window: int = NETWORK_PLOT_SMOOTH_WINDOW,
         x_axis_mode: str = "steps",
+        deferred: bool = False,
     ):
         """Initialize the network metrics plotter.
 
@@ -69,6 +70,7 @@ class NetworkMetricsPlotter:
             out_path: Path to save the plot image.
             smooth_window: Window size for moving average smoothing.
             x_axis_mode: 'steps' or 'episodes' for x-axis labeling.
+            deferred: If True, only render at the end (call render_final()).
         """
         self.enabled = enabled and plt is not None
         self.plot_interval = max(1, int(plot_interval))
@@ -77,6 +79,7 @@ class NetworkMetricsPlotter:
         self.x_axis_mode = (
             x_axis_mode if x_axis_mode in ("steps", "episodes") else "steps"
         )
+        self.deferred = deferred
 
         self.history: Dict[str, List[float]] = {
             "step": [],
@@ -144,6 +147,10 @@ class NetworkMetricsPlotter:
         _append("grad_norm", grad_norm)
         _append("target_q_mean", target_q_mean)
         _append("td_error", td_error)
+
+        # Skip rendering if deferred mode
+        if self.deferred:
+            return
 
         if step % self.plot_interval != 0 and step > 0:
             return
@@ -262,9 +269,15 @@ class NetworkMetricsPlotter:
         fig.tight_layout()
         fig.savefig(self.out_path, dpi=NETWORK_PLOT_DPI)
 
+    def render_final(self):
+        """Force a final render (for deferred mode)."""
+        if self.enabled and self._has_data:
+            self._render()
+
     def close(self):
-        """Clean up resources (placeholder for future use)."""
-        pass
+        """Clean up resources and render final plot if deferred."""
+        if self.enabled and self.deferred and self._has_data:
+            self._render()
 
 
 __all__ = ["NetworkMetricsPlotter"]

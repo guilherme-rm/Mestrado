@@ -1,0 +1,71 @@
+# Experiment configurations for GNN vs Flat observation comparison
+# Run with: python scripts/run_experiments.py experiments.yaml
+
+# Global defaults (can be overridden per experiment)
+defaults:
+  seeds: [42, 123, 456] # Multiple seeds for statistical significance
+  deferred_plots: true # Faster training
+  no_resource_plots: false
+
+experiments:
+  # Small scenario experiments
+  - name: small_gnn
+    description: "Small scenario with GNN observations"
+    sce: Config/config_1.json
+    opt: Config/config_2.json
+    gnn_enabled: true
+    gnn_mode: replace
+
+  - name: small_flat
+    description: "Small scenario with flat observations (no GNN)"
+    sce: Config/config_1.json
+    opt: Config/config_2.json
+    gnn_enabled: false
+
+  # Medium scenario experiments
+  - name: medium_gnn
+    description: "Medium scenario with GNN observations"
+    sce: Config/config_sce_medium.json
+    opt: Config/config_opt_medium.json
+    gnn_enabled: true
+    gnn_mode: replace
+
+  - name: medium_flat
+    description: "Medium scenario with flat observations (no GNN)"
+    sce: Config/config_sce_medium.json
+    opt: Config/config_opt_medium.json
+    gnn_enabled: false
+
+  # Large scenario experiments
+  - name: large_gnn
+    description: "Large scenario with GNN observations"
+    sce: Config/config_sce_large.json
+    opt: Config/config_opt_large.json
+    gnn_enabled: true
+    gnn_mode: replace
+
+  - name: large_flat
+    description: "Large scenario with flat observations (no GNN)"
+    sce: Config/config_sce_large.json
+    opt: Config/config_opt_large.json
+    gnn_enabled: false
+
+# Optional: Define experiment groups for partial runs
+groups:
+  small:
+    - small_gnn
+    - small_flat
+  medium:
+    - medium_gnn
+    - medium_flat
+  large:
+    - large_gnn
+    - large_flat
+  gnn_only:
+    - small_gnn
+    - medium_gnn
+    - large_gnn
+  flat_only:
+    - small_flat
+    - medium_flat
+    - large_flat
