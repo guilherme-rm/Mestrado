@@ -4,7 +4,16 @@ This module contains constants that don't need to be in the JSON config files.
 Import these values where needed instead of hardcoding them.
 """
 
-NETWORK_PLOT_ENABLED = True
+# ============== PERFORMANCE SETTINGS ==============
+# Set to True for faster training (disables expensive features)
+FAST_MODE = True
+
+# Step logging throttle - higher = fewer CSV writes, better performance
+# For large configs, use 50-100
+DEFAULT_STEP_LOG_THROTTLE = 10 if not FAST_MODE else 100
+
+# ============== PLOT SETTINGS ==============
+NETWORK_PLOT_ENABLED = True and not FAST_MODE
 NETWORK_PLOT_INTERVAL = 50
 NETWORK_PLOT_SMOOTH_WINDOW = 100
 NETWORK_PLOT_FILENAME = "network_metrics.png"
@@ -12,7 +21,7 @@ NETWORK_PLOT_FIGSIZE = (14, 10)
 NETWORK_PLOT_DPI = 120
 
 DEFAULT_PLOT_SMOOTH_WINDOW = 100
-DEFAULT_PLOT_INTERVAL = 50
+DEFAULT_PLOT_INTERVAL = 50 if not FAST_MODE else 100
 GRAD_CLIP_VALUE = 1.0
 
 DEFAULT_MIN_MEMORY_FOR_LEARNING = 1000
@@ -20,14 +29,15 @@ DEFAULT_MIN_MEMORY_FOR_LEARNING = 1000
 EPS_MAX_DECAY = 0.995
 EPS_MAX_MIN = 0.1
 
-TELECOM_PLOT_ENABLED = True
-TELECOM_PLOT_INTERVAL = 1  
+# Telecom network topology plot - expensive due to interference graph computation
+TELECOM_PLOT_ENABLED = True and not FAST_MODE
+TELECOM_PLOT_INTERVAL = 10 if not FAST_MODE else 50  # Plot every N episodes
 TELECOM_PLOT_FILENAME = "network_topology.png"
 TELECOM_PLOT_FIGSIZE = (12, 10)
 TELECOM_PLOT_DPI = 100
 
 # Resource (CPU/GPU) metrics plotting configuration
-RESOURCE_PLOT_ENABLED = True
+RESOURCE_PLOT_ENABLED = True and not FAST_MODE
 RESOURCE_PLOT_INTERVAL = 50  # Sample every N steps
 RESOURCE_PLOT_SMOOTH_WINDOW = 100
 RESOURCE_PLOT_FILENAME = "resource_metrics.png"

@@ -47,7 +47,9 @@ from constants import (
     RESOURCE_PLOT_INTERVAL,
     RESOURCE_PLOT_SMOOTH_WINDOW,
     RESOURCE_PLOT_FILENAME,
-    DEFERRED_PLOTTING
+    DEFERRED_PLOTTING,
+    DEFAULT_STEP_LOG_THROTTLE,
+    DEFAULT_PLOT_INTERVAL,
 )
 
 @dataclass
@@ -57,12 +59,12 @@ class TrainingConfig:
     nsteps: int
     nagents: int
     enable_plot: bool = True
-    plot_interval: int = 10
+    plot_interval: int = DEFAULT_PLOT_INTERVAL
     plot_smooth_window: int = 50
     plot_x_axis: str = "episodes"
     early_termination: bool = True
-    step_log_throttle: int = 1
-    checkpoint_interval: int = 100
+    step_log_throttle: int = DEFAULT_STEP_LOG_THROTTLE  # Higher = faster, less CSV I/O
+    checkpoint_interval: int = 100  # Not used (checkpointing removed)
     # Epsilon schedule
     eps_start: float = 1.0
     eps_end: float = 0.01
@@ -76,11 +78,11 @@ class TrainingConfig:
             nsteps=opt.nsteps,
             nagents=opt.nagents,
             enable_plot=getattr(opt, "enable_plot", True),
-            plot_interval=getattr(opt, "plot_interval", 10),
+            plot_interval=getattr(opt, "plot_interval", DEFAULT_PLOT_INTERVAL),
             plot_smooth_window=getattr(opt, "plot_smooth_window", 50),
             plot_x_axis=getattr(opt, "plot_x_axis", "episodes"),
             early_termination=getattr(opt, "early_termination", True),
-            step_log_throttle=getattr(opt, "step_log_throttle", 1),
+            step_log_throttle=getattr(opt, "step_log_throttle", DEFAULT_STEP_LOG_THROTTLE),
             checkpoint_interval=getattr(opt, "checkpoint_interval", 100),
         )
 
@@ -659,10 +661,6 @@ class Trainer:
         
         for episode in range(self.config.nepisodes):
             self._run_episode(episode)
-            
-            # Checkpointing
-            if self._should_checkpoint(episode):
-                checkpoint_agents(self.run_dir, self.agents, episode + 1)
         
         self._finalize()
         return self.metrics_aggregator.to_dict()
@@ -820,10 +818,11 @@ class Trainer:
                 episode_return=metrics.return_total,
             )
     
-    def _should_checkpoint(self, episode: int) -> bool:
-        """Determine if a checkpoint should be saved."""
-        interval = self.config.checkpoint_interval
-        return interval and (episode + 1) % interval == 0
+    # Checkpointing removed for performance - uncomment if needed
+    # def _should_checkpoint(self, episode: int) -> bool:
+    #     """Determine if a checkpoint should be saved."""
+    #     interval = self.config.checkpoint_interval
+    #     return interval and (episode + 1) % interval == 0
     
     def _update_telecom_plotter(self, episode: int):
         """Update the telecom network topology plot at end of episode."""
@@ -892,8 +891,7 @@ class Trainer:
             resource_usage=resource_summary,
         )
         
-        # Final checkpoint
-        checkpoint_agents(self.run_dir, self.agents, self.config.nepisodes, tag="final")
+        # Checkpointing removed for performance
 
 
 class ExperimentManager:

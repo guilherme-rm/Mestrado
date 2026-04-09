@@ -67,8 +67,12 @@ def save_environment_snapshot(run_dir: RunDirectoryManager):
 
 
 class CSVLogger:
-    def __init__(self, path: Path, header: List[str]):
+    """Buffered CSV logger - flushes every N rows or on close for better performance."""
+    
+    def __init__(self, path: Path, header: List[str], flush_interval: int = 100):
         self.path = path
+        self.flush_interval = flush_interval
+        self._row_count = 0
         self.f = open(self.path, "w", newline="", encoding="utf-8")
         self.writer = csv.writer(self.f)
         self.writer.writerow(header)
@@ -76,10 +80,14 @@ class CSVLogger:
 
     def log(self, row: Iterable[Any]):
         self.writer.writerow(list(row))
-        self.f.flush()
+        self._row_count += 1
+        # Only flush periodically, not on every write
+        if self._row_count % self.flush_interval == 0:
+            self.f.flush()
 
     def close(self):
         if not self.f.closed:
+            self.f.flush()  # Final flush on close
             self.f.close()
 
 
