@@ -110,12 +110,21 @@ class LocationManager:
         return self._mobility_manager is not None
     
 class RewardCalculator:
-    """Encapsulates reward computation logic."""
+    """Encapsulates reward computation logic with caching for performance."""
     
     def __init__(self, sce, opt, device: torch.device):
         self.sce = sce
         self.opt = opt
         self.device = device
+        # Caches for performance - populated on first use
+        self._bs_locations_np = None  # (nBS, 2) numpy array
+        self._bs_list_cache = None
+    
+    def _init_bs_cache(self, BS_list):
+        """Initialize BS location cache for vectorized operations."""
+        if self._bs_list_cache is not BS_list or self._bs_locations_np is None:
+            self._bs_list_cache = BS_list
+            self._bs_locations_np = np.array([bs.Get_Location() for bs in BS_list], dtype=np.float32)
     
     def compute(
         self,
@@ -191,15 +200,47 @@ class RewardCalculator:
     def _compute_interference(
         self, action_all, channel, BS_list, agent_location, rx_power
     ) -> float:
+        """Compute interference using vectorized numpy operations."""
         K = self.sce.nChannel
-        interference = 0.0
         
-        for i in range(self.opt.nagents):
-            if int(action_all[i] % K) == channel:
-                sel_bs_i = int(action_all[i] // K)
-                if sel_bs_i >= len(BS_list):
-                    continue
-                interference += self._compute_rx_power(BS_list[sel_bs_i], agent_location)
+        # Initialize BS cache if needed
+        self._init_bs_cache(BS_list)
+        
+        # Convert actions to numpy for vectorized operations
+        if isinstance(action_all, torch.Tensor):
+            actions_np = action_all.cpu().numpy()
+        else:
+            actions_np = np.array(action_all)
+        
+        # Vectorized channel and BS extraction
+        channels = actions_np % K
+        bs_indices = actions_np // K
+        
+        # Find agents on the same channel (excluding those with invalid BS)
+        same_channel_mask = (channels == channel) & (bs_indices < len(BS_list))
+        
+        if not np.any(same_channel_mask):
+            return 0.0
+        
+        # Get agent location as numpy
+        if isinstance(agent_location, torch.Tensor):
+            loc_np = agent_location.cpu().numpy()
+        else:
+            loc_np = np.array(agent_location)
+        
+        # Get BS indices and locations for interfering agents
+        interfering_bs_idx = bs_indices[same_channel_mask]
+        interfering_bs_locs = self._bs_locations_np[interfering_bs_idx]
+        
+        # Vectorized distance calculation
+        loc_diff = interfering_bs_locs - loc_np  # (n_interfering, 2)
+        distances = np.sqrt(np.sum(loc_diff ** 2, axis=1))
+        distances = np.maximum(distances, 1.0)
+        
+        # Compute rx power for all interfering BS at once
+        interference = 0.0
+        for i, bs_idx in enumerate(interfering_bs_idx):
+            interference += BS_list[bs_idx].Receive_Power(distances[i])
         
         return max(0.0, interference - rx_power)
     

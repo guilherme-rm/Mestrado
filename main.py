@@ -117,7 +117,33 @@ def main():
         default=None,
         help="Custom name for the run directory (instead of timestamp)",
     )
+    parser.add_argument(
+        "--slow-mode",
+        action="store_true",
+        help="Disable fast mode: enables plots, full logging, all features",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true", 
+        help="Disable all plotting (telecom, network metrics, resource metrics)",
+    )
     args = parser.parse_args()
+    
+    # Slow mode: enable expensive features for full diagnostics
+    if args.slow_mode:
+        constants.FAST_MODE = False
+        constants.NETWORK_PLOT_ENABLED = True
+        constants.TELECOM_PLOT_ENABLED = True
+        constants.RESOURCE_PLOT_ENABLED = True
+        constants.DEFAULT_STEP_LOG_THROTTLE = 10
+        constants.DEFERRED_PLOTTING = False
+        print("Slow mode enabled: full plots and logging")
+    
+    # Disable all plots
+    if args.no_plots:
+        constants.NETWORK_PLOT_ENABLED = False
+        constants.TELECOM_PLOT_ENABLED = False
+        constants.RESOURCE_PLOT_ENABLED = False
     
     # Apply command-line flags to constants
     if args.deferred_plots:
