@@ -193,6 +193,55 @@ class StepMetricsLogger:
         self.logger.close()
 
 
+class TimeMetricsLogger:
+    """Logs per-step timing breakdown for performance analysis."""
+
+    HEADER = [
+        "global_step",
+        "episode",
+        "step_in_episode",
+        "did_learn",
+        "epsilon_seconds",
+        "run_step_seconds",
+        "gnn_encode_seconds",
+        "select_actions_seconds",
+        "select_actions_forward_seconds",
+        "select_actions_policy_seconds",
+        "telecom_update_seconds",
+        "record_step_metrics_seconds",
+        "learn_seconds",
+        "store_and_learn_total_seconds",
+        "store_transition_seconds",
+        "detach_seconds",
+        "optimize_seconds",
+        "target_update_seconds",
+        "sample_batch_seconds",
+        "batch_to_device_seconds",
+        "q_pred_seconds",
+        "target_q_seconds",
+        "loss_backward_seconds",
+        "grad_norm_seconds",
+        "optimizer_step_seconds",
+        "optimize_total_seconds",
+        "record_learning_seconds",
+        "log_step_seconds",
+        "advance_seconds",
+        "step_total_seconds",
+        "telecom_plotter_update_seconds",
+    ]
+
+    def __init__(self, run_dir: RunDirectoryManager):
+        # CSV format with a plain name for easy spreadsheet/script analysis.
+        self.logger = CSVLogger(run_dir.subpath("time_metrics.txt"), self.HEADER)
+
+    def log(self, **metrics):
+        row = [metrics.get(k, "") for k in self.HEADER]
+        self.logger.log(row)
+
+    def close(self):
+        self.logger.close()
+
+
 def checkpoint_agents(
     run_dir: RunDirectoryManager, agents, episode: int, tag: str = ""
 ):

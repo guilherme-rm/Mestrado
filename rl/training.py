@@ -4,11 +4,14 @@ from __future__ import annotations
 
 # Import math for exponential decay
 import math
+import time
 from dataclasses import dataclass
-from typing import Sequence, List, Optional, Dict
+from typing import Sequence, List, Optional, Dict, Tuple, Any
 
 import numpy as np
 import torch
+
+from torch import optim
 
 from constants import (
     GNN_ENABLED,
@@ -19,8 +22,11 @@ from constants import (
     GNN_OBSERVATION_MODE,
     GNN_INCLUDE_INTERFERENCE_EDGES,
     GNN_HETEROGENEOUS,
+    SHARED_AGENT_NETWORKS,
 )
-from .agent import Agent, TrainMetrics
+from .agent import Agent, TrainMetrics, DQNOptimizer
+from .networks import DNN
+from .memory import ReplayMemory
 
 
 @dataclass
@@ -34,7 +40,8 @@ class TrainingContext:
 def select_actions(
     agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float,
     gnn_observations: Dict[int, torch.Tensor] = None,
-) -> torch.Tensor:
+    return_timing: bool = False,
+) -> Any:
     """Select actions for all agents.
     
     Args:
@@ -47,13 +54,83 @@ def select_actions(
     Returns:
         Tensor of actions for each agent
     """
-    raw = []
-    for i, ag in enumerate(agents):
-        # Use GNN observation if available, otherwise flat state
-        obs = gnn_observations[i] if gnn_observations and i in gnn_observations else state
-        raw.append(ag.Select_Action(obs, scenario, eps))
-    stacked = torch.stack(raw)
-    return stacked.view(len(agents))
+    # Check if using shared networks for batched forward pass optimization
+    uses_shared = agents[0].uses_shared_networks if agents else False
+    
+    t_total = time.perf_counter()
+    forward_seconds = 0.0
+    policy_seconds = 0.0
+
+    if uses_shared and gnn_observations is None:
+        # Batched forward pass for shared networks with flat state
+        # All agents see the same state, so we only need one forward pass
+        # and apply action selection per agent
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            q_values = agents[0].model_policy(state)  # Single forward pass
+        forward_seconds = time.perf_counter() - t0
+        
+        raw = []
+        t0 = time.perf_counter()
+        for ag in agents:
+            action = ag._action_selector.select(q_values, eps)
+            raw.append(torch.tensor(action, device=state.device))
+        policy_seconds = time.perf_counter() - t0
+        stacked = torch.stack(raw)
+        actions = stacked.view(len(agents))
+        if return_timing:
+            return actions, {
+                "select_actions_forward_seconds": forward_seconds,
+                "select_actions_policy_seconds": policy_seconds,
+                "select_actions_total_seconds": time.perf_counter() - t_total,
+            }
+        return actions
+    
+    elif uses_shared and gnn_observations is not None:
+        # Batched forward pass for shared networks with GNN observations
+        # Stack all observations and do single batched forward pass
+        obs_list = [gnn_observations[i] for i in range(len(agents))]
+        batched_obs = torch.stack(obs_list)  # (nagents, obs_dim)
+        
+        t0 = time.perf_counter()
+        with torch.no_grad():
+            all_q_values = agents[0].model_policy(batched_obs)  # (nagents, n_actions)
+        forward_seconds = time.perf_counter() - t0
+        
+        raw = []
+        t0 = time.perf_counter()
+        for i, ag in enumerate(agents):
+            action = ag._action_selector.select(all_q_values[i], eps)
+            raw.append(torch.tensor(action, device=state.device))
+        policy_seconds = time.perf_counter() - t0
+        stacked = torch.stack(raw)
+        actions = stacked.view(len(agents))
+        if return_timing:
+            return actions, {
+                "select_actions_forward_seconds": forward_seconds,
+                "select_actions_policy_seconds": policy_seconds,
+                "select_actions_total_seconds": time.perf_counter() - t_total,
+            }
+        return actions
+    
+    else:
+        # Original per-agent forward passes for independent networks
+        raw = []
+        t0 = time.perf_counter()
+        for i, ag in enumerate(agents):
+            # Use GNN observation if available, otherwise flat state
+            obs = gnn_observations[i] if gnn_observations and i in gnn_observations else state
+            raw.append(ag.Select_Action(obs, scenario, eps))
+        policy_seconds = time.perf_counter() - t0
+        stacked = torch.stack(raw)
+        actions = stacked.view(len(agents))
+        if return_timing:
+            return actions, {
+                "select_actions_forward_seconds": 0.0,
+                "select_actions_policy_seconds": policy_seconds,
+                "select_actions_total_seconds": time.perf_counter() - t_total,
+            }
+        return actions
 
 
 def compute_rewards_and_next_state(
@@ -85,7 +162,7 @@ def store_and_learn(
     opt,
     gnn_obs: Optional[Dict[int, torch.Tensor]] = None,
     gnn_obs_next: Optional[Dict[int, torch.Tensor]] = None,
-) -> Optional[Dict[str, float]]:
+) -> Tuple[Optional[Dict[str, float]], Dict[str, float]]:
     """Store transitions and perform learning step.
     
     Args:
@@ -100,45 +177,86 @@ def store_and_learn(
         gnn_obs: Optional dict mapping agent_id to GNN observation for current state
         gnn_obs_next: Optional dict mapping agent_id to GNN observation for next state
     
-    Returns:
-        Aggregated training metrics across all agents that learned,
-        or None if no agent learned this step.
+        Returns:
+                Tuple of:
+                - Aggregated training metrics across all agents that learned,
+                    or None if no agent learned this step.
+                - Timing breakdown dictionary for store/learn phases.
     """
+    t_total = time.perf_counter()
+
     # Get nupdate for hard target update period (handle DotDic returning None)
     nupdate = getattr(opt, "nupdate", None)
     if nupdate is None:
         nupdate = 50
     
+    # Check if using shared networks (all agents share same network)
+    uses_shared = agents[0].uses_shared_networks if agents else False
+    
     all_metrics: List[TrainMetrics] = []
+    store_transition_seconds = 0.0
+    optimize_seconds = 0.0
+    target_update_seconds = 0.0
+    detach_seconds = 0.0
 
     for i, ag in enumerate(agents):
         # 1. Store transition - use GNN observations if available
         if gnn_obs is not None and gnn_obs_next is not None:
             # GNN mode: use per-agent embeddings
             # IMPORTANT: detach() to prevent keeping computation graph in replay buffer
+            t0 = time.perf_counter()
             agent_state = gnn_obs.get(i).detach()
             agent_next_state = gnn_obs_next.get(i).detach()
+            detach_seconds += time.perf_counter() - t0
         else:
             # Flat mode: use shared state
             agent_state = state
             agent_next_state = next_state
         
+        t0 = time.perf_counter()
         ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario)
+        store_transition_seconds += time.perf_counter() - t0
 
-        # 2. Optimize policy network
-        metrics = ag.Optimize_Model()
-        if metrics.did_learn:
-            all_metrics.append(metrics)
+        if uses_shared:
+            # With shared networks: only optimize once (on first agent)
+            # All agents share the same network, so one update is enough
+            if i == 0:
+                t0 = time.perf_counter()
+                metrics = ag.Optimize_Model()
+                optimize_seconds += time.perf_counter() - t0
+                if metrics.did_learn:
+                    all_metrics.append(metrics)
+                # Hard target update (only once since networks are shared)
+                if step_idx % nupdate == 0:
+                    t0 = time.perf_counter()
+                    ag.Target_Update()
+                    target_update_seconds += time.perf_counter() - t0
+        else:
+            # Independent networks: optimize each agent separately
+            t0 = time.perf_counter()
+            metrics = ag.Optimize_Model()
+            optimize_seconds += time.perf_counter() - t0
+            if metrics.did_learn:
+                all_metrics.append(metrics)
+            # Hard target update every nupdate steps (like original UARA-DRL)
+            if step_idx % nupdate == 0:
+                t0 = time.perf_counter()
+                ag.Target_Update()
+                target_update_seconds += time.perf_counter() - t0
 
-        # 3. Hard target update every nupdate steps (like original UARA-DRL)
-        if step_idx % nupdate == 0:
-            ag.Target_Update()
+    timing = {
+        "store_and_learn_total_seconds": time.perf_counter() - t_total,
+        "store_transition_seconds": store_transition_seconds,
+        "optimize_seconds": optimize_seconds,
+        "target_update_seconds": target_update_seconds,
+        "detach_seconds": detach_seconds,
+    }
     
     if not all_metrics:
-        return None
+        return None, timing
     
     n = len(all_metrics)
-    return {
+    out = {
         "loss": sum(m.loss for m in all_metrics) / n,
         "mean_q": sum(m.mean_q for m in all_metrics) / n,
         "max_q": max(m.max_q for m in all_metrics),
@@ -147,7 +265,24 @@ def store_and_learn(
         "grad_norm": sum(m.grad_norm for m in all_metrics) / n,
         "target_q_mean": sum(m.target_q_mean for m in all_metrics) / n,
         "td_error": sum(m.td_error for m in all_metrics) / n,
+        "optimize_calls": n,
     }
+
+    timing_keys = [
+        "sample_batch_seconds",
+        "batch_to_device_seconds",
+        "q_pred_seconds",
+        "target_q_seconds",
+        "loss_backward_seconds",
+        "grad_norm_seconds",
+        "optimizer_step_seconds",
+        "optimize_total_seconds",
+    ]
+    for key in timing_keys:
+        vals = [m.timing.get(key, 0.0) for m in all_metrics if m.timing]
+        out[key] = (sum(vals) / len(vals)) if vals else 0.0
+
+    return out, timing
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
@@ -185,6 +320,32 @@ def create_agents(
     Returns:
         List of Agent instances.
     """
+    shared_networks = None
+    shared_memory = None
+    
+    if SHARED_AGENT_NETWORKS:
+        # Create single shared network for all agents
+        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
+        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
+        model_target.load_state_dict(model_policy.state_dict())
+        model_target.eval()
+        
+        momentum = opt.momentum if opt.momentum is not None else 0.0
+        optimizer = optim.RMSprop(
+            params=model_policy.parameters(),
+            lr=opt.learning_rate,
+            momentum=momentum,
+        )
+        dqn_optimizer = DQNOptimizer(
+            model_policy, model_target, optimizer, opt, device
+        )
+        shared_networks = (model_policy, model_target, optimizer, dqn_optimizer)
+        
+        # Create single shared replay buffer - larger capacity since all agents contribute
+        # Use nagents * original_capacity to maintain similar per-agent experience storage
+        shared_capacity = opt.capacity * opt.nagents
+        shared_memory = ReplayMemory(shared_capacity)
+    
     return [
         Agent(
             opt,
@@ -194,6 +355,8 @@ def create_agents(
             device=device,
             mobility_manager=mobility_manager,
             input_dim=gnn_input_dim,
+            shared_networks=shared_networks,
+            shared_memory=shared_memory,
         )
         for i in range(opt.nagents)
     ]

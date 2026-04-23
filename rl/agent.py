@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from random import random, uniform, choice, randrange
 from typing import Tuple, Optional, Dict
+import time
+
+import math
 
 import numpy as np
 from numpy import pi
@@ -26,6 +29,7 @@ class TrainMetrics:
     target_q_mean: float = 0.0
     td_error: float = 0.0
     did_learn: bool = False  # Whether learning actually happened
+    timing: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, float]:
         """Convert to dictionary for logging."""
@@ -45,6 +49,7 @@ from torch import optim
 from torch.nn import functional as F
 
 from .memory import ReplayMemory, Transition
+from .memory import ReplayMemory, TensorReplayMemory, Transition
 from .networks import DNN
 
 class LocationManager:
@@ -119,12 +124,28 @@ class RewardCalculator:
         # Caches for performance - populated on first use
         self._bs_locations_np = None  # (nBS, 2) numpy array
         self._bs_list_cache = None
+        # Scalar config values — fixed for the lifetime of training
+        self._profit = float(getattr(sce, "profit", 0.5))
+        self._power_cost = float(getattr(sce, "power_cost", 0.0005))
+        self._action_cost = float(getattr(sce, "action_cost", 0.001))
+        self._noise = 10.0 ** (sce.N0 / 10.0) * sce.BW   # noise floor (mW)
+        self._qos_thr_linear = 10.0 ** (sce.QoS_thr / 10.0)
+        self._nChannel = sce.nChannel
+        self._bw = sce.BW
     
     def _init_bs_cache(self, BS_list):
         """Initialize BS location cache for vectorized operations."""
         if self._bs_list_cache is not BS_list or self._bs_locations_np is None:
             self._bs_list_cache = BS_list
             self._bs_locations_np = np.array([bs.Get_Location() for bs in BS_list], dtype=np.float32)
+            self._bs_tx_power_dbm = np.array([bs.Transmit_Power_dBm() for bs in BS_list], dtype=np.float32)
+            self._bs_radii = np.array([bs.radius for bs in BS_list], dtype=np.float32)
+            self._bs_loss_a = np.array(
+                [34.0 if bs.bs_type in ("MBS", "PBS") else 37.0 for bs in BS_list], dtype=np.float32
+            )
+            self._bs_loss_b = np.array(
+                [40.0 if bs.bs_type in ("MBS", "PBS") else 30.0 for bs in BS_list], dtype=np.float32
+            )
     
     def compute(
         self,
@@ -139,7 +160,7 @@ class RewardCalculator:
         (utility-based reward with action selection cost)
         """
         BS_list = scenario.Get_BaseStations()
-        K = self.sce.nChannel
+        K = self._nChannel
 
         BS_selected = int(action_i // K)
         Ch_selected = int(action_i % K)
@@ -148,38 +169,34 @@ class RewardCalculator:
         if BS_selected >= len(BS_list):
             return self._invalid_action_result()
 
+        # Convert once — both rx_power and interference need numpy
+        if isinstance(action_all, torch.Tensor):
+            actions_np = action_all.detach().cpu().numpy()
+        else:
+            actions_np = np.asarray(action_all)
+        if isinstance(agent_location, torch.Tensor):
+            loc_np = agent_location.detach().cpu().numpy()
+        else:
+            loc_np = np.asarray(agent_location)
+
         selected_bs = BS_list[BS_selected]
-        rx_power = self._compute_rx_power(selected_bs, agent_location)
+        rx_power = self._compute_rx_power(selected_bs, loc_np)
         if rx_power <= 1e-20:
             return self._invalid_action_result()
 
         interference = self._compute_interference(
-            action_all, Ch_selected, BS_list, agent_location, rx_power
+            actions_np, Ch_selected, BS_list, loc_np, rx_power
         )
         
         sinr, capacity_mbps = self._compute_sinr_and_capacity(rx_power, interference)
         cap_tensor = torch.tensor(float(capacity_mbps), device=self.device)
 
-        # Compute utility-based reward
-        # Rate in Mbps (same as capacity_mbps)
-        rate = capacity_mbps
-        
-        # Get config parameters with defaults
-        profit = float(getattr(self.sce, "profit", 0.5))
-        power_cost = float(getattr(self.sce, "power_cost", 0.0005))
-        action_cost = float(getattr(self.sce, "action_cost", 0.001))
-        
-        # Get transmit power of selected BS
-        tx_power_dbm = selected_bs.Transmit_Power_dBm()
-        
-        # Calculate reward: utility (profit * rate) minus costs
-        reward_val = profit * rate - power_cost * tx_power_dbm - action_cost
-        
-        # Determine QoS satisfaction (binary)
-        if sinr >= 10 ** (self.sce.QoS_thr / 10):
-            qos = 1
-        else:
-            qos = 0
+        reward_val = (
+            self._profit * capacity_mbps
+            - self._power_cost * selected_bs.Transmit_Power_dBm()
+            - self._action_cost
+        )
+        qos = 1 if sinr >= self._qos_thr_linear else 0
 
         return (qos, torch.tensor(reward_val, device=self.device, dtype=torch.float32), cap_tensor)
     
@@ -190,66 +207,46 @@ class RewardCalculator:
             torch.tensor(0.0, device=self.device),
         )
     
-    def _compute_rx_power(self, bs, agent_location: torch.Tensor) -> float:
-        BS_location = torch.tensor(bs.Get_Location(), device=self.device, dtype=torch.float32)
-        Loc_diff = BS_location - agent_location
-        distance = torch.sqrt(Loc_diff[0] ** 2 + Loc_diff[1] ** 2)
-        d_val = max(float(distance.item()), 1.0)
+    def _compute_rx_power(self, bs, loc_np: np.ndarray) -> float:
+        bx, by = bs.Get_Location()
+        d_val = max(math.sqrt((bx - loc_np[0]) ** 2 + (by - loc_np[1]) ** 2), 1.0)
         return bs.Receive_Power(d_val)
     
     def _compute_interference(
-        self, action_all, channel, BS_list, agent_location, rx_power
+        self, actions_np: np.ndarray, channel: int, BS_list, loc_np: np.ndarray, rx_power: float
     ) -> float:
-        """Compute interference using vectorized numpy operations."""
-        K = self.sce.nChannel
-        
-        # Initialize BS cache if needed
+        """Compute interference using fully vectorized numpy operations."""
+        K = self._nChannel
         self._init_bs_cache(BS_list)
-        
-        # Convert actions to numpy for vectorized operations
-        if isinstance(action_all, torch.Tensor):
-            actions_np = action_all.cpu().numpy()
-        else:
-            actions_np = np.array(action_all)
-        
-        # Vectorized channel and BS extraction
+
         channels = actions_np % K
         bs_indices = actions_np // K
-        
-        # Find agents on the same channel (excluding those with invalid BS)
         same_channel_mask = (channels == channel) & (bs_indices < len(BS_list))
-        
+
         if not np.any(same_channel_mask):
             return 0.0
-        
-        # Get agent location as numpy
-        if isinstance(agent_location, torch.Tensor):
-            loc_np = agent_location.cpu().numpy()
-        else:
-            loc_np = np.array(agent_location)
-        
-        # Get BS indices and locations for interfering agents
+
         interfering_bs_idx = bs_indices[same_channel_mask]
         interfering_bs_locs = self._bs_locations_np[interfering_bs_idx]
-        
-        # Vectorized distance calculation
-        loc_diff = interfering_bs_locs - loc_np  # (n_interfering, 2)
-        distances = np.sqrt(np.sum(loc_diff ** 2, axis=1))
-        distances = np.maximum(distances, 1.0)
-        
-        # Compute rx power for all interfering BS at once
-        interference = 0.0
-        for i, bs_idx in enumerate(interfering_bs_idx):
-            interference += BS_list[bs_idx].Receive_Power(distances[i])
-        
+        loc_diff = interfering_bs_locs - loc_np
+        distances = np.maximum(np.sqrt(np.sum(loc_diff ** 2, axis=1)), 1.0)
+
+        # Vectorised path-loss using precomputed BS attributes (no Python loop)
+        loss_a = self._bs_loss_a[interfering_bs_idx]
+        loss_b = self._bs_loss_b[interfering_bs_idx]
+        tx_pow = self._bs_tx_power_dbm[interfering_bs_idx]
+        radii = self._bs_radii[interfering_bs_idx]
+        path_loss = loss_a + loss_b * np.log10(distances)
+        rx_pow_mw = 10.0 ** ((tx_pow - path_loss) / 10.0)
+        in_range = distances <= radii
+        interference = float(np.sum(rx_pow_mw * in_range))
+
         return max(0.0, interference - rx_power)
     
     def _compute_sinr_and_capacity(self, rx_power: float, interference: float) -> Tuple[float, float]:
-        noise = 10 ** (self.sce.N0 / 10) * self.sce.BW
-        sinr = rx_power / (interference + noise)
-        spec_eff = np.log2(1.0 + sinr) if sinr > 0 else 0.0
-        capacity_bps = self.sce.BW * spec_eff
-        return sinr, capacity_bps / 1e6
+        sinr = rx_power / (interference + self._noise)
+        spec_eff = math.log2(1.0 + sinr) if sinr > 0 else 0.0
+        return sinr, self._bw * spec_eff / 1e6
     
 class DQNOptimizer:
     """Handles DQN optimization logic."""
@@ -260,9 +257,18 @@ class DQNOptimizer:
         self.optimizer = optimizer
         self.opt = opt
         self.device = device
-        
+
         # Store last training metrics
         self._last_metrics: TrainMetrics = TrainMetrics()
+        self._optimize_count = 0
+        # Compute grad-norm diagnostics every N optimizer steps (default: 10).
+        # Be robust to null/invalid values loaded from config.
+        raw_diag_interval = getattr(opt, "diag_interval", 10)
+        try:
+            parsed_diag_interval = int(raw_diag_interval) if raw_diag_interval is not None else 10
+        except (TypeError, ValueError):
+            parsed_diag_interval = 10
+        self._diag_interval: int = max(1, parsed_diag_interval)
     
     @property
     def last_metrics(self) -> TrainMetrics:
@@ -283,6 +289,7 @@ class DQNOptimizer:
         Returns:
             TrainMetrics with statistics from this optimization step.
         """
+        t_total = time.perf_counter()
         self._last_metrics = TrainMetrics()
         
         if len(memory) < self.opt.batch_size:
@@ -292,35 +299,64 @@ class DQNOptimizer:
             and len(memory) < self.opt.min_memory_for_learning):
             return self._last_metrics
 
-        transitions = memory.Sample(self.opt.batch_size)
-        batch = Transition(*zip(*transitions))
+        t0 = time.perf_counter()
+        batch_data = memory.Sample(self.opt.batch_size)
+        sample_batch_seconds = time.perf_counter() - t0
 
-        state_batch = torch.cat(batch.state).to(self.device)
-        action_batch = torch.cat(batch.action).to(self.device)
-        reward_batch = torch.cat(batch.reward).to(self.device)
-        next_state_batch = torch.cat(batch.next_state).to(self.device)
+        t0 = time.perf_counter()
+        if isinstance(batch_data, tuple):
+            # TensorReplayMemory: already-stacked tensors
+            state_batch, action_batch, next_state_batch, reward_batch = batch_data
+            state_batch = state_batch.to(self.device)
+            action_batch = action_batch.to(self.device)
+            next_state_batch = next_state_batch.to(self.device)
+            reward_batch = reward_batch.to(self.device)
+        else:
+            # Legacy ReplayMemory: list of Transition namedtuples
+            batch = Transition(*zip(*batch_data))
+            state_batch = torch.cat(batch.state).to(self.device)
+            action_batch = torch.cat(batch.action).to(self.device)
+            reward_batch = torch.cat(batch.reward).to(self.device)
+            next_state_batch = torch.cat(batch.next_state).to(self.device)
+        batch_to_device_seconds = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         q_all = self.model_policy(state_batch)
         q_pred = q_all.gather(1, action_batch)
+        q_pred_seconds = time.perf_counter() - t0
 
+        t0 = time.perf_counter()
         with torch.no_grad():
             next_actions = self.model_policy(next_state_batch).argmax(1, keepdim=True)
             q_next = self.model_target(next_state_batch).gather(1, next_actions)
             target_q = reward_batch.unsqueeze(1) + self.opt.gamma * q_next
+        target_q_seconds = time.perf_counter() - t0
 
         td_error = (q_pred - target_q).abs()
         
         loss = F.smooth_l1_loss(q_pred, target_q)
 
+        t0 = time.perf_counter()
         self.optimizer.zero_grad()
         loss.backward()
+        loss_backward_seconds = time.perf_counter() - t0
         
-        grad_norm = self._compute_grad_norm()
+        t0 = time.perf_counter()
+        self._optimize_count += 1
+        grad_norm = (
+            self._compute_grad_norm()
+            if self._optimize_count % self._diag_interval == 0
+            else 0.0
+        )
+        grad_norm_seconds = time.perf_counter() - t0
         
         for param in self.model_policy.parameters():
             if param.grad is not None:
                 param.grad.data.clamp_(-GRAD_CLIP_VALUE, GRAD_CLIP_VALUE)
+
+        t0 = time.perf_counter()
         self.optimizer.step()
+        optimizer_step_seconds = time.perf_counter() - t0
         
         # Store metrics
         self._last_metrics = TrainMetrics(
@@ -333,6 +369,16 @@ class DQNOptimizer:
             target_q_mean=target_q.mean().item(),
             td_error=td_error.mean().item(),
             did_learn=True,
+            timing={
+                "sample_batch_seconds": sample_batch_seconds,
+                "batch_to_device_seconds": batch_to_device_seconds,
+                "q_pred_seconds": q_pred_seconds,
+                "target_q_seconds": target_q_seconds,
+                "loss_backward_seconds": loss_backward_seconds,
+                "grad_norm_seconds": grad_norm_seconds,
+                "optimizer_step_seconds": optimizer_step_seconds,
+                "optimize_total_seconds": time.perf_counter() - t_total,
+            },
         )
         
         return self._last_metrics
@@ -441,6 +487,8 @@ class Agent:
         device: torch.device,
         mobility_manager: Optional[MobilityManager] = None,
         input_dim: int = None,
+        shared_networks: Optional[Tuple] = None,
+        shared_memory: Optional['ReplayMemory'] = None,
     ):
         """Initialize an agent (UE) with optional mobility and GNN support.
         
@@ -452,11 +500,15 @@ class Agent:
             device: PyTorch device.
             mobility_manager: Optional MobilityManager for UE mobility.
             input_dim: Optional input dimension for GNN mode.
+            shared_networks: Optional tuple of (model_policy, model_target, optimizer, dqn_optimizer)
+                to share networks across agents. If None, creates independent networks.
+            shared_memory: Optional shared ReplayMemory for all agents. If None, creates independent memory.
         """
         self.opt = opt
         self.sce = sce
         self.id = index
         self.device = device
+        self._uses_shared_networks = shared_networks is not None
         
         # Composed components
         self._location_manager = LocationManager(
@@ -471,28 +523,40 @@ class Agent:
             strategy=getattr(opt, "action_strategy", "epsilon_greedy")
         )
         
-        # Memory
-        self.memory = ReplayMemory(opt.capacity)
+        # Memory - shared or independent
+        if shared_memory is not None:
+            self.memory = shared_memory
+        else:
+            self.memory = TensorReplayMemory(opt.capacity)
         
-        # Networks (pass input_dim for GNN mode)
-        self.model_policy = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
-        self.model_target = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
-        self.model_target.load_state_dict(self.model_policy.state_dict())
-        self.model_target.eval()
-        
-        # Optimizer component (with default momentum if not specified)
-        momentum = opt.momentum if opt.momentum is not None else 0.0
-        self.optimizer = optim.RMSprop(
-            params=self.model_policy.parameters(),
-            lr=opt.learning_rate,
-            momentum=momentum,
-        )
-        self._dqn_optimizer = DQNOptimizer(
-            self.model_policy, self.model_target, self.optimizer, opt, device
-        )
+        if shared_networks is not None:
+            # Use shared networks
+            self.model_policy, self.model_target, self.optimizer, self._dqn_optimizer = shared_networks
+        else:
+            # Create independent networks (original behavior)
+            self.model_policy = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
+            self.model_target = DNN(opt, sce, scenario, input_dim=input_dim).to(device)
+            self.model_target.load_state_dict(self.model_policy.state_dict())
+            self.model_target.eval()
+            
+            # Optimizer component (with default momentum if not specified)
+            momentum = opt.momentum if opt.momentum is not None else 0.0
+            self.optimizer = optim.RMSprop(
+                params=self.model_policy.parameters(),
+                lr=opt.learning_rate,
+                momentum=momentum,
+            )
+            self._dqn_optimizer = DQNOptimizer(
+                self.model_policy, self.model_target, self.optimizer, opt, device
+            )
         
         # Cache for action space size
         self._n_actions = scenario.BS_Number() * sce.nChannel
+    
+    @property
+    def uses_shared_networks(self) -> bool:
+        """Check if this agent uses shared networks."""
+        return self._uses_shared_networks
 
     @property
     def location(self) -> torch.Tensor:

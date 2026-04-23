@@ -28,6 +28,7 @@ from functions.logging import (
     save_environment_snapshot,
     EpisodeMetricsLogger,
     StepMetricsLogger,
+    TimeMetricsLogger,
     checkpoint_agents,
     write_summary,
     write_experiment_summary,
@@ -69,6 +70,7 @@ class TrainingConfig:
     eps_start: float = 1.0
     eps_end: float = 0.01
     eps_decay: float = 0.995
+    learn_every: int = 1  # Run optimizer every N environment steps (1 = every step)
     
     @classmethod
     def from_opt(cls, opt) -> "TrainingConfig":
@@ -84,6 +86,7 @@ class TrainingConfig:
             early_termination=getattr(opt, "early_termination", True),
             step_log_throttle=getattr(opt, "step_log_throttle", DEFAULT_STEP_LOG_THROTTLE),
             checkpoint_interval=getattr(opt, "checkpoint_interval", 100),
+            learn_every=getattr(opt, "learn_every", 1),
         )
 
 
@@ -467,48 +470,67 @@ class EpisodeRunner:
         self._gnn_obs = None
         self._gnn_obs_next = None
     
-    def run_step(self, epsilon: float) -> Dict[str, float]:
+    def run_step(self, epsilon: float) -> Dict[str, Any]:
         """Execute a single step and return step metrics."""
+        step_t0 = time.perf_counter()
         self.last_epsilon = epsilon
         
         # Get GNN observations if enabled
         gnn_obs = None
+        t0 = time.perf_counter()
         if self.gnn_manager and self.gnn_manager.enabled:
             gnn_obs = self.gnn_manager.encode(
                 self.agents, 
                 self.ctx.actions if self.step > 0 else None
             )
             self._gnn_obs = gnn_obs
+        gnn_encode_seconds = time.perf_counter() - t0
         
         # Select actions (with GNN observations if available)
-        self.ctx.actions = select_actions(
+        t0 = time.perf_counter()
+        self.ctx.actions, select_actions_timing = select_actions(
             self.agents, self.ctx.state, self.scenario, epsilon,
             gnn_observations=gnn_obs,
+            return_timing=True,
         )
+        select_actions_seconds = time.perf_counter() - t0
         
         # Record actions for debugging
         self._record_actions()
         
         # Environment step
+        t0 = time.perf_counter()
         self.ctx.rewards, self.ctx.qos, self.ctx.next_state, capacity = (
             compute_rewards_and_next_state(
                 self.agents, self.ctx.actions, self.ctx.state, self.scenario
             )
         )
+        telecom_update_seconds = time.perf_counter() - t0
         
         # Record metrics
+        t0 = time.perf_counter()
         self.metrics.record_step(self.ctx.rewards, self.ctx.qos, capacity)
+        record_step_metrics_seconds = time.perf_counter() - t0
         
         # Prepare step metrics for logging
         step_metrics = {
             "mean_reward": float(self.ctx.rewards.mean().item()),
             "qos_mean": float(self.ctx.qos.mean().item()),
             "capacity_sum": float(capacity.sum().item()),
+            "timing": {
+                "run_step_seconds": time.perf_counter() - step_t0,
+                "gnn_encode_seconds": gnn_encode_seconds,
+                "select_actions_seconds": select_actions_seconds,
+                "select_actions_forward_seconds": select_actions_timing.get("select_actions_forward_seconds", 0.0),
+                "select_actions_policy_seconds": select_actions_timing.get("select_actions_policy_seconds", 0.0),
+                "telecom_update_seconds": telecom_update_seconds,
+                "record_step_metrics_seconds": record_step_metrics_seconds,
+            },
         }
         
         return step_metrics
     
-    def learn(self, opt) -> Optional[Dict[str, float]]:
+    def learn(self, opt) -> tuple[Optional[Dict[str, float]], Dict[str, float]]:
         """Store experience and update networks.
         
         Returns:
@@ -597,6 +619,7 @@ class Trainer:
         self.resource_plotter = self._create_resource_plotter()
         self.ep_logger = EpisodeMetricsLogger(run_dir)
         self.step_logger = StepMetricsLogger(run_dir, throttle=config.step_log_throttle)
+        self.time_logger = TimeMetricsLogger(run_dir)
         
         # Training state
         self.total_steps = 0
@@ -679,21 +702,77 @@ class Trainer:
         
         # Set current episode for linear increasing epsilon policy
         self.epsilon_scheduler.set_episode(episode)
+
+        telecom_plotter_update_seconds = 0.0
         
         while not self.episode_runner.is_done():
+            step_t0 = time.perf_counter()
+
+            t0 = time.perf_counter()
             eps = self.epsilon_scheduler.get_epsilon(self.total_steps)
+            epsilon_seconds = time.perf_counter() - t0
+
+            t0 = time.perf_counter()
             step_metrics = self.episode_runner.run_step(eps)
-            
-            train_metrics = self.episode_runner.learn(self.opt)
+            run_step_seconds = time.perf_counter() - t0
+
+            timing = step_metrics.get("timing", {})
+
+            t0 = time.perf_counter()
+            train_metrics, learn_timing = self.episode_runner.learn(self.opt)
+            learn_seconds = time.perf_counter() - t0
             
             # Record learning metrics for episode aggregation
+            t0 = time.perf_counter()
             self.episode_runner.metrics.record_learning(train_metrics)
+            record_learning_seconds = time.perf_counter() - t0
             
             # Step-level logging
+            t0 = time.perf_counter()
             self._log_step(episode, eps, step_metrics, train_metrics)
+            log_step_seconds = time.perf_counter() - t0
+
+            step_in_episode = self.episode_runner.step
+            did_learn = 1 if train_metrics is not None else 0
             
             # Advance state
+            t0 = time.perf_counter()
             self.episode_runner.advance()
+            advance_seconds = time.perf_counter() - t0
+
+            self.time_logger.log(
+                global_step=self.total_steps,
+                episode=episode,
+                step_in_episode=step_in_episode,
+                did_learn=did_learn,
+                epsilon_seconds=epsilon_seconds,
+                run_step_seconds=run_step_seconds,
+                gnn_encode_seconds=timing.get("gnn_encode_seconds", ""),
+                select_actions_seconds=timing.get("select_actions_seconds", ""),
+                select_actions_forward_seconds=timing.get("select_actions_forward_seconds", ""),
+                select_actions_policy_seconds=timing.get("select_actions_policy_seconds", ""),
+                telecom_update_seconds=timing.get("telecom_update_seconds", ""),
+                record_step_metrics_seconds=timing.get("record_step_metrics_seconds", ""),
+                learn_seconds=learn_seconds,
+                store_and_learn_total_seconds=learn_timing.get("store_and_learn_total_seconds", ""),
+                store_transition_seconds=learn_timing.get("store_transition_seconds", ""),
+                detach_seconds=learn_timing.get("detach_seconds", ""),
+                optimize_seconds=learn_timing.get("optimize_seconds", ""),
+                target_update_seconds=learn_timing.get("target_update_seconds", ""),
+                sample_batch_seconds=train_metrics.get("sample_batch_seconds", "") if train_metrics else "",
+                batch_to_device_seconds=train_metrics.get("batch_to_device_seconds", "") if train_metrics else "",
+                q_pred_seconds=train_metrics.get("q_pred_seconds", "") if train_metrics else "",
+                target_q_seconds=train_metrics.get("target_q_seconds", "") if train_metrics else "",
+                loss_backward_seconds=train_metrics.get("loss_backward_seconds", "") if train_metrics else "",
+                grad_norm_seconds=train_metrics.get("grad_norm_seconds", "") if train_metrics else "",
+                optimizer_step_seconds=train_metrics.get("optimizer_step_seconds", "") if train_metrics else "",
+                optimize_total_seconds=train_metrics.get("optimize_total_seconds", "") if train_metrics else "",
+                record_learning_seconds=record_learning_seconds,
+                log_step_seconds=log_step_seconds,
+                advance_seconds=advance_seconds,
+                step_total_seconds=time.perf_counter() - step_t0,
+                telecom_plotter_update_seconds="",
+            )
             self.total_steps += 1
         
         # Episode complete
@@ -701,7 +780,43 @@ class Trainer:
         self.metrics_aggregator.record_episode(ep_metrics)
         
         # Update telecom network plotter at end of episode
+        t0 = time.perf_counter()
         self._update_telecom_plotter(episode)
+        telecom_plotter_update_seconds = time.perf_counter() - t0
+
+        self.time_logger.log(
+            global_step=self.total_steps,
+            episode=episode,
+            step_in_episode="episode_end",
+            did_learn="",
+            epsilon_seconds="",
+            run_step_seconds="",
+            gnn_encode_seconds="",
+            select_actions_seconds="",
+            select_actions_forward_seconds="",
+            select_actions_policy_seconds="",
+            telecom_update_seconds="",
+            record_step_metrics_seconds="",
+            learn_seconds="",
+            store_and_learn_total_seconds="",
+            store_transition_seconds="",
+            detach_seconds="",
+            optimize_seconds="",
+            target_update_seconds="",
+            sample_batch_seconds="",
+            batch_to_device_seconds="",
+            q_pred_seconds="",
+            target_q_seconds="",
+            loss_backward_seconds="",
+            grad_norm_seconds="",
+            optimizer_step_seconds="",
+            optimize_total_seconds="",
+            record_learning_seconds="",
+            log_step_seconds="",
+            advance_seconds="",
+            step_total_seconds="",
+            telecom_plotter_update_seconds=telecom_plotter_update_seconds,
+        )
         
         ep_duration = time.time() - ep_start
         self._log_episode(episode, ep_metrics, ep_duration)
@@ -863,6 +978,7 @@ class Trainer:
         self.resource_plotter.close()
         self.ep_logger.close()
         self.step_logger.close()
+        self.time_logger.close()
         
         # Gather feature flags
         feature_flags = {

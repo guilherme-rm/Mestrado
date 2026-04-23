@@ -24,6 +24,7 @@
    "nupdate": 50,
    
    "early_termination": true,
+      "learn_every": 1,
    "cuda": 0,
    
    "enable_plot": true,
@@ -40,6 +41,7 @@
       "momentum": "RMSprop momentum parameter (legacy).",
       "tau": "Soft target network update rate.",
       "min_memory_for_learning": "Minimum transitions before learning starts.",
+      "learn_every": "Run optimizer every N env steps. 1=every step, 2=every other step, etc.",
       "action_strategy": "Action selection: epsilon_greedy, greedy, or boltzmann.",
       "epsilon_policy": "'linear_increasing' (original) or 'exponential_decay' (standard RL).",
       "eps_min": "Starting epsilon for linear_increasing policy.",

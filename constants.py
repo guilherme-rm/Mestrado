@@ -12,6 +12,12 @@ FAST_MODE = True
 # For large configs, use 50-100
 DEFAULT_STEP_LOG_THROTTLE = 10 if not FAST_MODE else 100
 
+# Shared networks mode: all agents share one policy/target network
+# - True: Single network, batched updates (faster but less specialization)
+# - False: Independent networks per agent (original UARA-DRL behavior)
+# WARNING: Enabling this changes learning dynamics - agents won't specialize
+SHARED_AGENT_NETWORKS = False
+
 # ============== PLOT SETTINGS ==============
 NETWORK_PLOT_ENABLED = True and not FAST_MODE
 NETWORK_PLOT_INTERVAL = 50
