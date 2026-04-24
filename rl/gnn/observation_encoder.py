@@ -32,7 +32,7 @@ class GNNObservationEncoder(nn.Module):
         device: PyTorch device
         mode: "replace" (GNN only) or "augment" (GNN + flat obs)
         gnn_output_dim: Output embedding dimension
-        conv_type: GNN architecture ("gcn", "gat", "sage", "edge")
+        conv_type: GNN architecture ("gcn", "gat", "sage", "edge", "transformer")
     """
     
     def __init__(
@@ -78,6 +78,7 @@ class GNNObservationEncoder(nn.Module):
                 output_dim=gnn_output_dim,
                 num_layers=gnn_num_layers,
                 conv_type=gnn_type,
+                use_edge_attr=(gnn_type == "transformer"),
             ).to(device)
         
         self._output_dim = gnn_output_dim

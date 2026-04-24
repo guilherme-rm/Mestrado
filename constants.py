@@ -62,6 +62,10 @@ DEFERRED_PLOTTING = True
 # Set to True to use GNN-based observation encoding, False for original flat obs
 GNN_ENABLED = False
 
+# Use TransformerConv-backed graph encoder when GNN is enabled.
+# When False, uses the existing GCN/GAT/SAGE selection.
+GNN_TRANSFORMER_ENABLED = False
+
 # GNN architecture parameters
 GNN_HIDDEN_DIM = 64
 GNN_OUTPUT_DIM = 64
