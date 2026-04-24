@@ -95,6 +95,18 @@ def main():
         help="GNN observation mode: 'replace' (GNN only) or 'augment' (GNN + flat obs)",
     )
     parser.add_argument(
+        "--gnn-transformer",
+        action="store_true",
+        default=None,
+        help="Enable TransformerConv backend for GNN encoder",
+    )
+    parser.add_argument(
+        "--no-gnn-transformer",
+        action="store_true",
+        default=None,
+        help="Disable TransformerConv backend for GNN encoder",
+    )
+    parser.add_argument(
         "--mobility",
         action="store_true",
         default=None,
@@ -154,8 +166,16 @@ def main():
     # GNN configuration
     if args.no_gnn:
         constants.GNN_ENABLED = False
+        constants.GNN_TRANSFORMER_ENABLED = False
     elif args.gnn_enabled:
         constants.GNN_ENABLED = True
+
+    if args.no_gnn_transformer:
+        constants.GNN_TRANSFORMER_ENABLED = False
+    elif args.gnn_transformer:
+        constants.GNN_TRANSFORMER_ENABLED = True
+        constants.GNN_ENABLED = True
+
     if args.gnn_mode:
         constants.GNN_OBSERVATION_MODE = args.gnn_mode
     
@@ -220,6 +240,7 @@ def main():
     print(f"Channels: {sce.nChannel}")
     print(f"Trials: {args.ntrials}")
     print(f"GNN enabled: {constants.GNN_ENABLED}")
+    print(f"GNN transformer: {constants.GNN_TRANSFORMER_ENABLED}")
     print(f"Mobility enabled: {mobility.MOBILITY_ENABLED}")
     if args.run_name:
         print(f"Run name: {args.run_name}")

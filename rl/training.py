@@ -21,6 +21,7 @@ from constants import (
     GNN_OBSERVATION_MODE,
     GNN_INCLUDE_INTERFERENCE_EDGES,
     GNN_HETEROGENEOUS,
+    GNN_TRANSFORMER_ENABLED,
     SHARED_AGENT_NETWORKS,
     USE_TENSOR_REPLAY_BUFFER,
 )
@@ -405,6 +406,7 @@ class GNNObservationManager:
             gnn_num_layers=GNN_NUM_LAYERS,
             use_attention=GNN_USE_ATTENTION,
             include_interference_edges=GNN_INCLUDE_INTERFERENCE_EDGES,
+            conv_type="transformer" if GNN_TRANSFORMER_ENABLED else "gcn",
             heterogeneous=GNN_HETEROGENEOUS,
         )
     

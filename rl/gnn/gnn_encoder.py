@@ -1,6 +1,6 @@
 """GNN encoder using PyTorch Geometric layers.
 
-Uses standard PyG layers (GCNConv, GATConv, SAGEConv) instead of manual
+Uses standard PyG layers (GCNConv, GATConv, SAGEConv, TransformerConv) instead of manual
 message passing implementation.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Literal
 import torch
 import torch.nn as nn
-from torch_geometric.nn import GCNConv, GATConv, SAGEConv, GraphNorm
+from torch_geometric.nn import GCNConv, GATConv, SAGEConv, TransformerConv, GraphNorm
 
 from rl.gnn.graph_builder import WirelessGraph
 
@@ -26,13 +26,14 @@ class GNNEncoder(nn.Module):
     - "gcn": Graph Convolutional Network (Kipf & Welling, 2017)
     - "gat": Graph Attention Network (Veličković et al., 2018)
     - "sage": GraphSAGE (Hamilton et al., 2017)
+    - "transformer": Graph Transformer convolution (Shi et al., 2020)
     
     Args:
         input_dim: Input node feature dimension
         hidden_dim: Hidden layer dimension
         output_dim: Output embedding dimension
         num_layers: Number of GNN layers
-        conv_type: Type of convolution ("gcn", "gat", "sage")
+        conv_type: Type of convolution ("gcn", "gat", "sage", "transformer")
         dropout: Dropout probability
         use_edge_attr: Whether to use edge features (GAT only)
     """
@@ -43,7 +44,7 @@ class GNNEncoder(nn.Module):
         hidden_dim: int = DEFAULT_HIDDEN_DIM,
         output_dim: int = DEFAULT_HIDDEN_DIM,
         num_layers: int = DEFAULT_NUM_LAYERS,
-        conv_type: Literal["gcn", "gat", "sage"] = "gcn",
+        conv_type: Literal["gcn", "gat", "sage", "transformer"] = "gcn",
         dropout: float = 0.1,
         use_edge_attr: bool = False,
     ):
@@ -52,6 +53,7 @@ class GNNEncoder(nn.Module):
         self.num_layers = num_layers
         self.dropout = dropout
         self.use_edge_attr = use_edge_attr
+        self.conv_type = conv_type
         
         # Input projection
         self.input_proj = nn.Linear(input_dim, hidden_dim)
@@ -73,6 +75,20 @@ class GNNEncoder(nn.Module):
                                          heads=heads, dropout=dropout))
             elif conv_type == "sage":
                 self.convs.append(SAGEConv(in_dim, out_dim))
+            elif conv_type == "transformer":
+                heads = 4 if i < num_layers - 1 else 1
+                concat = i < num_layers - 1
+                out_per_head = out_dim // heads if concat else out_dim
+                self.convs.append(
+                    TransformerConv(
+                        in_dim,
+                        out_per_head,
+                        heads=heads,
+                        concat=concat,
+                        dropout=dropout,
+                        edge_dim=4 if use_edge_attr else None,
+                    )
+                )
             else:
                 raise ValueError(f"Unknown conv_type: {conv_type}")
             
@@ -94,7 +110,10 @@ class GNNEncoder(nn.Module):
         x = self.input_proj(graph.x)
         
         for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
-            x = conv(x, graph.edge_index)
+            if self.conv_type == "transformer" and self.use_edge_attr:
+                x = conv(x, graph.edge_index, graph.edge_attr)
+            else:
+                x = conv(x, graph.edge_index)
             x = norm(x)
             if i < self.num_layers - 1:
                 x = self.activation(x)
