@@ -6,9 +6,8 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Sequence, List, Optional, Dict, Tuple, Any
+from typing import Sequence, List, Optional, Dict
 
-import numpy as np
 import torch
 
 from torch import optim
@@ -23,10 +22,11 @@ from constants import (
     GNN_INCLUDE_INTERFERENCE_EDGES,
     GNN_HETEROGENEOUS,
     SHARED_AGENT_NETWORKS,
+    USE_TENSOR_REPLAY_BUFFER,
 )
 from .agent import Agent, TrainMetrics, DQNOptimizer
 from .networks import DNN
-from .memory import ReplayMemory
+from .memory import ReplayMemory, TensorReplayMemory
 
 
 @dataclass
@@ -41,7 +41,7 @@ def select_actions(
     agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float,
     gnn_observations: Dict[int, torch.Tensor] = None,
     return_timing: bool = False,
-) -> Any:
+):
     """Select actions for all agents.
     
     Args:
@@ -54,13 +54,13 @@ def select_actions(
     Returns:
         Tensor of actions for each agent
     """
-    # Check if using shared networks for batched forward pass optimization
-    uses_shared = agents[0].uses_shared_networks if agents else False
-    
     t_total = time.perf_counter()
     forward_seconds = 0.0
     policy_seconds = 0.0
 
+    # Check if using shared networks for batched forward pass optimization
+    uses_shared = agents[0].uses_shared_networks if agents else False
+    
     if uses_shared and gnn_observations is None:
         # Batched forward pass for shared networks with flat state
         # All agents see the same state, so we only need one forward pass
@@ -70,8 +70,8 @@ def select_actions(
             q_values = agents[0].model_policy(state)  # Single forward pass
         forward_seconds = time.perf_counter() - t0
         
-        raw = []
         t0 = time.perf_counter()
+        raw = []
         for ag in agents:
             action = ag._action_selector.select(q_values, eps)
             raw.append(torch.tensor(action, device=state.device))
@@ -97,8 +97,8 @@ def select_actions(
             all_q_values = agents[0].model_policy(batched_obs)  # (nagents, n_actions)
         forward_seconds = time.perf_counter() - t0
         
-        raw = []
         t0 = time.perf_counter()
+        raw = []
         for i, ag in enumerate(agents):
             action = ag._action_selector.select(all_q_values[i], eps)
             raw.append(torch.tensor(action, device=state.device))
@@ -162,7 +162,7 @@ def store_and_learn(
     opt,
     gnn_obs: Optional[Dict[int, torch.Tensor]] = None,
     gnn_obs_next: Optional[Dict[int, torch.Tensor]] = None,
-) -> Tuple[Optional[Dict[str, float]], Dict[str, float]]:
+) -> tuple[Optional[Dict[str, float]], Dict[str, float]]:
     """Store transitions and perform learning step.
     
     Args:
@@ -177,14 +177,13 @@ def store_and_learn(
         gnn_obs: Optional dict mapping agent_id to GNN observation for current state
         gnn_obs_next: Optional dict mapping agent_id to GNN observation for next state
     
-        Returns:
-                Tuple of:
-                - Aggregated training metrics across all agents that learned,
-                    or None if no agent learned this step.
-                - Timing breakdown dictionary for store/learn phases.
+    Returns:
+        Tuple of:
+        - Aggregated training metrics across all agents that learned,
+          or None if no agent learned this step.
+        - Timing breakdown dictionary for store/learn phases.
     """
     t_total = time.perf_counter()
-
     # Get nupdate for hard target update period (handle DotDic returning None)
     nupdate = getattr(opt, "nupdate", None)
     if nupdate is None:
@@ -247,16 +246,16 @@ def store_and_learn(
     timing = {
         "store_and_learn_total_seconds": time.perf_counter() - t_total,
         "store_transition_seconds": store_transition_seconds,
+        "detach_seconds": detach_seconds,
         "optimize_seconds": optimize_seconds,
         "target_update_seconds": target_update_seconds,
-        "detach_seconds": detach_seconds,
     }
-    
+
     if not all_metrics:
         return None, timing
     
     n = len(all_metrics)
-    out = {
+    metrics = {
         "loss": sum(m.loss for m in all_metrics) / n,
         "mean_q": sum(m.mean_q for m in all_metrics) / n,
         "max_q": max(m.max_q for m in all_metrics),
@@ -265,24 +264,8 @@ def store_and_learn(
         "grad_norm": sum(m.grad_norm for m in all_metrics) / n,
         "target_q_mean": sum(m.target_q_mean for m in all_metrics) / n,
         "td_error": sum(m.td_error for m in all_metrics) / n,
-        "optimize_calls": n,
     }
-
-    timing_keys = [
-        "sample_batch_seconds",
-        "batch_to_device_seconds",
-        "q_pred_seconds",
-        "target_q_seconds",
-        "loss_backward_seconds",
-        "grad_norm_seconds",
-        "optimizer_step_seconds",
-        "optimize_total_seconds",
-    ]
-    for key in timing_keys:
-        vals = [m.timing.get(key, 0.0) for m in all_metrics if m.timing]
-        out[key] = (sum(vals) / len(vals)) if vals else 0.0
-
-    return out, timing
+    return metrics, timing
 
 
 def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
@@ -331,9 +314,14 @@ def create_agents(
         model_target.eval()
         
         momentum = opt.momentum if opt.momentum is not None else 0.0
+        learning_rate = (
+            getattr(opt, "learning_rate", None)
+            or getattr(opt, "learningrate", None)
+            or 5e-4
+        )
         optimizer = optim.RMSprop(
             params=model_policy.parameters(),
-            lr=opt.learning_rate,
+            lr=learning_rate,
             momentum=momentum,
         )
         dqn_optimizer = DQNOptimizer(
@@ -344,7 +332,10 @@ def create_agents(
         # Create single shared replay buffer - larger capacity since all agents contribute
         # Use nagents * original_capacity to maintain similar per-agent experience storage
         shared_capacity = opt.capacity * opt.nagents
-        shared_memory = ReplayMemory(shared_capacity)
+        if USE_TENSOR_REPLAY_BUFFER:
+            shared_memory = TensorReplayMemory(shared_capacity)
+        else:
+            shared_memory = ReplayMemory(shared_capacity)
     
     return [
         Agent(
@@ -450,8 +441,8 @@ class GNNObservationManager:
         
         # Extract UE positions from agents
         ue_positions = [
-            agent.location.cpu().numpy() if isinstance(agent.location, torch.Tensor)
-            else np.array(agent.location)
+            agent.location if isinstance(agent.location, torch.Tensor)
+            else torch.as_tensor(agent.location, device=self.device, dtype=torch.float32)
             for agent in agents
         ]
         

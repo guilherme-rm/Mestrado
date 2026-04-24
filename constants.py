@@ -18,6 +18,10 @@ DEFAULT_STEP_LOG_THROTTLE = 10 if not FAST_MODE else 100
 # WARNING: Enabling this changes learning dynamics - agents won't specialize
 SHARED_AGENT_NETWORKS = False
 
+# Use a tensor-backed replay buffer to keep samples on-device and reduce
+# per-step host->device transfer overhead.
+USE_TENSOR_REPLAY_BUFFER = True
+
 # ============== PLOT SETTINGS ==============
 NETWORK_PLOT_ENABLED = True and not FAST_MODE
 NETWORK_PLOT_INTERVAL = 50
@@ -56,7 +60,7 @@ DEFERRED_PLOTTING = True
 
 
 # Set to True to use GNN-based observation encoding, False for original flat obs
-GNN_ENABLED = True
+GNN_ENABLED = False
 
 # GNN architecture parameters
 GNN_HIDDEN_DIM = 64

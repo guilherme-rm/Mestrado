@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from random import random, uniform, choice, randrange
-from typing import Tuple, Optional, Dict
-import time
-
-import math
+from typing import Tuple, Optional, Dict, Union
 
 import numpy as np
 from numpy import pi
 import torch
 
-from constants import GRAD_CLIP_VALUE
+from constants import GRAD_CLIP_VALUE, USE_TENSOR_REPLAY_BUFFER
 from telecom.mobility import MobilityManager
 
 
@@ -29,7 +26,6 @@ class TrainMetrics:
     target_q_mean: float = 0.0
     td_error: float = 0.0
     did_learn: bool = False  # Whether learning actually happened
-    timing: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, float]:
         """Convert to dictionary for logging."""
@@ -48,7 +44,6 @@ class TrainMetrics:
 from torch import optim
 from torch.nn import functional as F
 
-from .memory import ReplayMemory, Transition
 from .memory import ReplayMemory, TensorReplayMemory, Transition
 from .networks import DNN
 
@@ -123,29 +118,56 @@ class RewardCalculator:
         self.device = device
         # Caches for performance - populated on first use
         self._bs_locations_np = None  # (nBS, 2) numpy array
+        self._bs_locations_t = None   # (nBS, 2) torch tensor
+        self._bs_tx_powers_t = None   # (nBS,) tx power in dBm
+        self._bs_radii_t = None       # (nBS,) coverage radius
+        self._bs_type_code_t = None   # (nBS,) 0 for MBS/PBS, 1 for FBS
         self._bs_list_cache = None
-        # Scalar config values — fixed for the lifetime of training
-        self._profit = float(getattr(sce, "profit", 0.5))
-        self._power_cost = float(getattr(sce, "power_cost", 0.0005))
-        self._action_cost = float(getattr(sce, "action_cost", 0.001))
-        self._noise = 10.0 ** (sce.N0 / 10.0) * sce.BW   # noise floor (mW)
-        self._qos_thr_linear = 10.0 ** (sce.QoS_thr / 10.0)
-        self._nChannel = sce.nChannel
-        self._bw = sce.BW
     
     def _init_bs_cache(self, BS_list):
         """Initialize BS location cache for vectorized operations."""
         if self._bs_list_cache is not BS_list or self._bs_locations_np is None:
             self._bs_list_cache = BS_list
             self._bs_locations_np = np.array([bs.Get_Location() for bs in BS_list], dtype=np.float32)
-            self._bs_tx_power_dbm = np.array([bs.Transmit_Power_dBm() for bs in BS_list], dtype=np.float32)
-            self._bs_radii = np.array([bs.radius for bs in BS_list], dtype=np.float32)
-            self._bs_loss_a = np.array(
-                [34.0 if bs.bs_type in ("MBS", "PBS") else 37.0 for bs in BS_list], dtype=np.float32
+            self._bs_locations_t = torch.as_tensor(
+                self._bs_locations_np, device=self.device, dtype=torch.float32
             )
-            self._bs_loss_b = np.array(
-                [40.0 if bs.bs_type in ("MBS", "PBS") else 30.0 for bs in BS_list], dtype=np.float32
+            self._bs_tx_powers_t = torch.tensor(
+                [float(bs.Transmit_Power_dBm()) for bs in BS_list],
+                device=self.device,
+                dtype=torch.float32,
             )
+            self._bs_radii_t = torch.tensor(
+                [float(getattr(bs, "radius", float("inf"))) for bs in BS_list],
+                device=self.device,
+                dtype=torch.float32,
+            )
+            self._bs_type_code_t = torch.tensor(
+                [1.0 if getattr(bs, "bs_type", "MBS") == "FBS" else 0.0 for bs in BS_list],
+                device=self.device,
+                dtype=torch.float32,
+            )
+
+    def _rx_power_from_bs_index(self, bs_idx: int, agent_location: torch.Tensor) -> torch.Tensor:
+        """Compute received power in mW using torch path-loss on the current device."""
+        bs_loc = self._bs_locations_t[bs_idx]
+        diff = bs_loc - agent_location
+        d = torch.linalg.vector_norm(diff).clamp_min(1.0)
+
+        tx_power_dbm = self._bs_tx_powers_t[bs_idx]
+        is_fbs = self._bs_type_code_t[bs_idx]
+
+        # MBS/PBS: 34 + 40log10(d), FBS: 37 + 30log10(d)
+        loss_mbs_pbs = 34.0 + 40.0 * torch.log10(d)
+        loss_fbs = 37.0 + 30.0 * torch.log10(d)
+        loss = loss_mbs_pbs * (1.0 - is_fbs) + loss_fbs * is_fbs
+
+        rx_power_dbm = tx_power_dbm - loss
+        rx_mw = torch.pow(torch.tensor(10.0, device=self.device), rx_power_dbm / 10.0)
+
+        # Keep behavior consistent with BS.receive_power: zero outside coverage radius.
+        within_radius = d <= self._bs_radii_t[bs_idx]
+        return torch.where(within_radius, rx_mw, torch.tensor(0.0, device=self.device))
     
     def compute(
         self,
@@ -160,7 +182,7 @@ class RewardCalculator:
         (utility-based reward with action selection cost)
         """
         BS_list = scenario.Get_BaseStations()
-        K = self._nChannel
+        K = self.sce.nChannel
 
         BS_selected = int(action_i // K)
         Ch_selected = int(action_i % K)
@@ -169,34 +191,40 @@ class RewardCalculator:
         if BS_selected >= len(BS_list):
             return self._invalid_action_result()
 
-        # Convert once — both rx_power and interference need numpy
-        if isinstance(action_all, torch.Tensor):
-            actions_np = action_all.detach().cpu().numpy()
-        else:
-            actions_np = np.asarray(action_all)
-        if isinstance(agent_location, torch.Tensor):
-            loc_np = agent_location.detach().cpu().numpy()
-        else:
-            loc_np = np.asarray(agent_location)
+        self._init_bs_cache(BS_list)
 
-        selected_bs = BS_list[BS_selected]
-        rx_power = self._compute_rx_power(selected_bs, loc_np)
+        rx_power_t = self._rx_power_from_bs_index(BS_selected, agent_location)
+        rx_power = float(rx_power_t.detach().cpu())
         if rx_power <= 1e-20:
             return self._invalid_action_result()
 
         interference = self._compute_interference(
-            actions_np, Ch_selected, BS_list, loc_np, rx_power
+            action_all, Ch_selected, BS_list, agent_location, rx_power
         )
         
         sinr, capacity_mbps = self._compute_sinr_and_capacity(rx_power, interference)
         cap_tensor = torch.tensor(float(capacity_mbps), device=self.device)
 
-        reward_val = (
-            self._profit * capacity_mbps
-            - self._power_cost * selected_bs.Transmit_Power_dBm()
-            - self._action_cost
-        )
-        qos = 1 if sinr >= self._qos_thr_linear else 0
+        # Compute utility-based reward
+        # Rate in Mbps (same as capacity_mbps)
+        rate = capacity_mbps
+        
+        # Get config parameters with defaults
+        profit = float(getattr(self.sce, "profit", None) or 0.5)
+        power_cost = float(getattr(self.sce, "power_cost", None) or 0.0005)
+        action_cost = float(getattr(self.sce, "action_cost", None) or 0.001)
+        
+        # Get transmit power of selected BS
+        tx_power_dbm = float(self._bs_tx_powers_t[BS_selected].detach().cpu())
+        
+        # Calculate reward: utility (profit * rate) minus costs
+        reward_val = profit * rate - power_cost * tx_power_dbm - action_cost
+        
+        # Determine QoS satisfaction (binary)
+        if sinr >= 10 ** (self.sce.QoS_thr / 10):
+            qos = 1
+        else:
+            qos = 0
 
         return (qos, torch.tensor(reward_val, device=self.device, dtype=torch.float32), cap_tensor)
     
@@ -207,46 +235,75 @@ class RewardCalculator:
             torch.tensor(0.0, device=self.device),
         )
     
-    def _compute_rx_power(self, bs, loc_np: np.ndarray) -> float:
-        bx, by = bs.Get_Location()
-        d_val = max(math.sqrt((bx - loc_np[0]) ** 2 + (by - loc_np[1]) ** 2), 1.0)
+    def _compute_rx_power(self, bs, agent_location: torch.Tensor) -> float:
+        BS_location = torch.tensor(bs.Get_Location(), device=self.device, dtype=torch.float32)
+        Loc_diff = BS_location - agent_location
+        distance = torch.sqrt(Loc_diff[0] ** 2 + Loc_diff[1] ** 2)
+        d_val = max(float(distance.item()), 1.0)
         return bs.Receive_Power(d_val)
     
     def _compute_interference(
-        self, actions_np: np.ndarray, channel: int, BS_list, loc_np: np.ndarray, rx_power: float
+        self, action_all, channel, BS_list, agent_location, rx_power
     ) -> float:
-        """Compute interference using fully vectorized numpy operations."""
-        K = self._nChannel
+        """Compute interference using vectorized torch operations on device."""
+        K = self.sce.nChannel
+        
+        # Initialize BS cache if needed
         self._init_bs_cache(BS_list)
-
-        channels = actions_np % K
-        bs_indices = actions_np // K
-        same_channel_mask = (channels == channel) & (bs_indices < len(BS_list))
-
-        if not np.any(same_channel_mask):
+        
+        # Keep actions on device to avoid host-device transfers.
+        if isinstance(action_all, torch.Tensor):
+            actions_t = action_all.to(self.device)
+        else:
+            actions_t = torch.as_tensor(action_all, device=self.device)
+        actions_t = actions_t.to(torch.long).view(-1)
+        
+        # Vectorized channel and BS extraction
+        channels = actions_t % K
+        bs_indices = actions_t // K
+        
+        # Find agents on the same channel (excluding those with invalid BS)
+        same_channel_mask = (channels == int(channel)) & (bs_indices >= 0) & (bs_indices < len(BS_list))
+        
+        if not bool(same_channel_mask.any()):
             return 0.0
-
+        
+        # Keep location on device
+        if isinstance(agent_location, torch.Tensor):
+            loc_t = agent_location.to(self.device, dtype=torch.float32)
+        else:
+            loc_t = torch.as_tensor(agent_location, device=self.device, dtype=torch.float32)
+        
+        # Get BS indices and locations for interfering agents
         interfering_bs_idx = bs_indices[same_channel_mask]
-        interfering_bs_locs = self._bs_locations_np[interfering_bs_idx]
-        loc_diff = interfering_bs_locs - loc_np
-        distances = np.maximum(np.sqrt(np.sum(loc_diff ** 2, axis=1)), 1.0)
+        interfering_bs_locs = self._bs_locations_t[interfering_bs_idx]
+        
+        # Vectorized distance calculation
+        loc_diff = interfering_bs_locs - loc_t.unsqueeze(0)  # (n_interfering, 2)
+        distances = torch.linalg.vector_norm(loc_diff, dim=1).clamp_min(1.0)
 
-        # Vectorised path-loss using precomputed BS attributes (no Python loop)
-        loss_a = self._bs_loss_a[interfering_bs_idx]
-        loss_b = self._bs_loss_b[interfering_bs_idx]
-        tx_pow = self._bs_tx_power_dbm[interfering_bs_idx]
-        radii = self._bs_radii[interfering_bs_idx]
-        path_loss = loss_a + loss_b * np.log10(distances)
-        rx_pow_mw = 10.0 ** ((tx_pow - path_loss) / 10.0)
-        in_range = distances <= radii
-        interference = float(np.sum(rx_pow_mw * in_range))
+        # Per-BS pathloss model in torch (MBS/PBS vs FBS)
+        tx_dbm = self._bs_tx_powers_t[interfering_bs_idx]
+        is_fbs = self._bs_type_code_t[interfering_bs_idx]
+        radii = self._bs_radii_t[interfering_bs_idx]
 
+        loss_mbs_pbs = 34.0 + 40.0 * torch.log10(distances)
+        loss_fbs = 37.0 + 30.0 * torch.log10(distances)
+        loss = loss_mbs_pbs * (1.0 - is_fbs) + loss_fbs * is_fbs
+
+        rx_dbm = tx_dbm - loss
+        rx_mw = torch.pow(torch.tensor(10.0, device=self.device), rx_dbm / 10.0)
+        rx_mw = torch.where(distances <= radii, rx_mw, torch.zeros_like(rx_mw))
+
+        interference = float(rx_mw.sum().detach().cpu())
         return max(0.0, interference - rx_power)
     
     def _compute_sinr_and_capacity(self, rx_power: float, interference: float) -> Tuple[float, float]:
-        sinr = rx_power / (interference + self._noise)
-        spec_eff = math.log2(1.0 + sinr) if sinr > 0 else 0.0
-        return sinr, self._bw * spec_eff / 1e6
+        noise = 10 ** (self.sce.N0 / 10) * self.sce.BW
+        sinr = rx_power / (interference + noise)
+        spec_eff = np.log2(1.0 + sinr) if sinr > 0 else 0.0
+        capacity_bps = self.sce.BW * spec_eff
+        return sinr, capacity_bps / 1e6
     
 class DQNOptimizer:
     """Handles DQN optimization logic."""
@@ -257,18 +314,11 @@ class DQNOptimizer:
         self.optimizer = optimizer
         self.opt = opt
         self.device = device
-
+        self._amp_enabled = bool(getattr(opt, "amp_enabled", device.type == "cuda"))
+        self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        
         # Store last training metrics
         self._last_metrics: TrainMetrics = TrainMetrics()
-        self._optimize_count = 0
-        # Compute grad-norm diagnostics every N optimizer steps (default: 10).
-        # Be robust to null/invalid values loaded from config.
-        raw_diag_interval = getattr(opt, "diag_interval", 10)
-        try:
-            parsed_diag_interval = int(raw_diag_interval) if raw_diag_interval is not None else 10
-        except (TypeError, ValueError):
-            parsed_diag_interval = 10
-        self._diag_interval: int = max(1, parsed_diag_interval)
     
     @property
     def last_metrics(self) -> TrainMetrics:
@@ -283,13 +333,12 @@ class DQNOptimizer:
                 total_norm += param.grad.data.norm(2).item() ** 2
         return total_norm ** 0.5
     
-    def optimize(self, memory: ReplayMemory) -> TrainMetrics:
+    def optimize(self, memory: Union[ReplayMemory, 'TensorReplayMemory']) -> TrainMetrics:
         """Performs a single optimization step using Double DQN.
         
         Returns:
             TrainMetrics with statistics from this optimization step.
         """
-        t_total = time.perf_counter()
         self._last_metrics = TrainMetrics()
         
         if len(memory) < self.opt.batch_size:
@@ -299,86 +348,73 @@ class DQNOptimizer:
             and len(memory) < self.opt.min_memory_for_learning):
             return self._last_metrics
 
-        t0 = time.perf_counter()
-        batch_data = memory.Sample(self.opt.batch_size)
-        sample_batch_seconds = time.perf_counter() - t0
+        sample_out = memory.Sample(self.opt.batch_size)
 
-        t0 = time.perf_counter()
-        if isinstance(batch_data, tuple):
-            # TensorReplayMemory: already-stacked tensors
-            state_batch, action_batch, next_state_batch, reward_batch = batch_data
+        if isinstance(sample_out, tuple) and len(sample_out) == 4 and torch.is_tensor(sample_out[0]):
+            # TensorReplayMemory path: already batched tensors.
+            state_batch, action_batch, next_state_batch, reward_batch = sample_out
             state_batch = state_batch.to(self.device)
             action_batch = action_batch.to(self.device)
             next_state_batch = next_state_batch.to(self.device)
             reward_batch = reward_batch.to(self.device)
         else:
-            # Legacy ReplayMemory: list of Transition namedtuples
-            batch = Transition(*zip(*batch_data))
+            transitions = sample_out
+            batch = Transition(*zip(*transitions))
             state_batch = torch.cat(batch.state).to(self.device)
             action_batch = torch.cat(batch.action).to(self.device)
             reward_batch = torch.cat(batch.reward).to(self.device)
             next_state_batch = torch.cat(batch.next_state).to(self.device)
-        batch_to_device_seconds = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
-        q_all = self.model_policy(state_batch)
-        q_pred = q_all.gather(1, action_batch)
-        q_pred_seconds = time.perf_counter() - t0
+        self.optimizer.zero_grad(set_to_none=True)
 
-        t0 = time.perf_counter()
-        with torch.no_grad():
-            next_actions = self.model_policy(next_state_batch).argmax(1, keepdim=True)
-            q_next = self.model_target(next_state_batch).gather(1, next_actions)
-            target_q = reward_batch.unsqueeze(1) + self.opt.gamma * q_next
-        target_q_seconds = time.perf_counter() - t0
+        with torch.cuda.amp.autocast(enabled=self._amp_enabled):
+            q_all = self.model_policy(state_batch)
+            q_pred = q_all.gather(1, action_batch)
 
-        td_error = (q_pred - target_q).abs()
-        
-        loss = F.smooth_l1_loss(q_pred, target_q)
+            with torch.no_grad():
+                next_actions = self.model_policy(next_state_batch).argmax(1, keepdim=True)
+                q_next = self.model_target(next_state_batch).gather(1, next_actions)
+                target_q = reward_batch.unsqueeze(1) + self.opt.gamma * q_next
 
-        t0 = time.perf_counter()
-        self.optimizer.zero_grad()
-        loss.backward()
-        loss_backward_seconds = time.perf_counter() - t0
-        
-        t0 = time.perf_counter()
-        self._optimize_count += 1
-        grad_norm = (
-            self._compute_grad_norm()
-            if self._optimize_count % self._diag_interval == 0
-            else 0.0
-        )
-        grad_norm_seconds = time.perf_counter() - t0
-        
+            td_error = (q_pred - target_q).abs()
+            loss = F.smooth_l1_loss(q_pred, target_q)
+
+        self._scaler.scale(loss).backward()
+        self._scaler.unscale_(self.optimizer)
+
+        grad_norm = self._compute_grad_norm()
+
         for param in self.model_policy.parameters():
             if param.grad is not None:
                 param.grad.data.clamp_(-GRAD_CLIP_VALUE, GRAD_CLIP_VALUE)
 
-        t0 = time.perf_counter()
-        self.optimizer.step()
-        optimizer_step_seconds = time.perf_counter() - t0
-        
+        self._scaler.step(self.optimizer)
+        self._scaler.update()
+
+        # Extract scalar diagnostics with one host transfer.
+        metric_vec = torch.stack(
+            [
+                loss.detach(),
+                q_all.mean().detach(),
+                q_all.max().detach(),
+                q_all.min().detach(),
+                q_all.std().detach(),
+                target_q.mean().detach(),
+                td_error.mean().detach(),
+            ]
+        ).cpu()
+
         # Store metrics
         self._last_metrics = TrainMetrics(
-            loss=loss.item(),
-            mean_q=q_all.mean().item(),
-            max_q=q_all.max().item(),
-            min_q=q_all.min().item(),
-            q_std=q_all.std().item(),
+            loss=float(metric_vec[0]),
+            mean_q=float(metric_vec[1]),
+            max_q=float(metric_vec[2]),
+            min_q=float(metric_vec[3]),
+            q_std=float(metric_vec[4]),
             grad_norm=grad_norm,
-            target_q_mean=target_q.mean().item(),
-            td_error=td_error.mean().item(),
+            target_q_mean=float(metric_vec[5]),
+            td_error=float(metric_vec[6]),
             did_learn=True,
-            timing={
-                "sample_batch_seconds": sample_batch_seconds,
-                "batch_to_device_seconds": batch_to_device_seconds,
-                "q_pred_seconds": q_pred_seconds,
-                "target_q_seconds": target_q_seconds,
-                "loss_backward_seconds": loss_backward_seconds,
-                "grad_norm_seconds": grad_norm_seconds,
-                "optimizer_step_seconds": optimizer_step_seconds,
-                "optimize_total_seconds": time.perf_counter() - t_total,
-            },
         )
         
         return self._last_metrics
@@ -520,14 +556,17 @@ class Agent:
         )
         self._reward_calculator = RewardCalculator(sce, opt, device)
         self._action_selector = ActionSelector(
-            strategy=getattr(opt, "action_strategy", "epsilon_greedy")
+            strategy=(getattr(opt, "action_strategy", None) or "epsilon_greedy")
         )
         
         # Memory - shared or independent
         if shared_memory is not None:
             self.memory = shared_memory
         else:
-            self.memory = TensorReplayMemory(opt.capacity)
+            if USE_TENSOR_REPLAY_BUFFER:
+                self.memory = TensorReplayMemory(opt.capacity)
+            else:
+                self.memory = ReplayMemory(opt.capacity)
         
         if shared_networks is not None:
             # Use shared networks
@@ -541,9 +580,14 @@ class Agent:
             
             # Optimizer component (with default momentum if not specified)
             momentum = opt.momentum if opt.momentum is not None else 0.0
+            learning_rate = (
+                getattr(opt, "learning_rate", None)
+                or getattr(opt, "learningrate", None)
+                or 5e-4
+            )
             self.optimizer = optim.RMSprop(
                 params=self.model_policy.parameters(),
-                lr=opt.learning_rate,
+                lr=learning_rate,
                 momentum=momentum,
             )
             self._dqn_optimizer = DQNOptimizer(
