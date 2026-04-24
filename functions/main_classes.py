@@ -1033,6 +1033,7 @@ class ExperimentManager:
         self.sce = sce
         self.run_name = run_name
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.multi_gpu_device_ids: List[int] = []
         
         self.scenario = None
         self.run_dir = None
@@ -1040,9 +1041,53 @@ class ExperimentManager:
         self.config = None
         self.mobility_manager = None
         self.gnn_manager = None
+
+    def _configure_device_plan(self):
+        """Auto-select single vs multi-GPU based on availability and memory."""
+        # Defaults keep backward compatibility when keys are absent in config files.
+        auto_multi_gpu = bool(getattr(self.opt, "multi_gpu_auto", True))
+        min_mem_gb = float(getattr(self.opt, "multi_gpu_min_memory_gb", 8.0) or 8.0)
+
+        setattr(self.opt, "multi_gpu_enabled", False)
+        setattr(self.opt, "multi_gpu_device_ids", [])
+
+        if not torch.cuda.is_available():
+            self.device = torch.device("cpu")
+            print("Device plan: CPU (CUDA not available)")
+            return
+
+        gpu_count = torch.cuda.device_count()
+        if not auto_multi_gpu or gpu_count < 2:
+            self.device = torch.device("cuda:0")
+            print(f"Device plan: single GPU ({self.device})")
+            return
+
+        eligible_gpu_ids: List[int] = []
+        for gpu_id in range(gpu_count):
+            props = torch.cuda.get_device_properties(gpu_id)
+            total_mem_gb = props.total_memory / (1024 ** 3)
+            if total_mem_gb >= min_mem_gb:
+                eligible_gpu_ids.append(gpu_id)
+
+        if len(eligible_gpu_ids) >= 2:
+            self.multi_gpu_device_ids = eligible_gpu_ids
+            self.device = torch.device(f"cuda:{eligible_gpu_ids[0]}")
+            setattr(self.opt, "multi_gpu_enabled", True)
+            setattr(self.opt, "multi_gpu_device_ids", eligible_gpu_ids)
+            print(
+                "Device plan: multi-GPU enabled on "
+                f"{eligible_gpu_ids} (min memory per GPU: {min_mem_gb:.1f} GB)"
+            )
+        else:
+            self.device = torch.device("cuda:0")
+            print(
+                "Device plan: single GPU (insufficient eligible GPUs for multi-GPU). "
+                f"Need >=2 GPUs with at least {min_mem_gb:.1f} GB each."
+            )
     
     def setup(self):
         """Initialize all components for a trial."""
+        self._configure_device_plan()
         self.scenario = Scenario(self.sce)
         if self.run_name:
             self.run_dir = RunDirectoryManager(prefix=self.run_name, overwrite=False)
@@ -1079,6 +1124,7 @@ class ExperimentManager:
             self.device,
             mobility_manager=self.mobility_manager,
             gnn_input_dim=gnn_input_dim,
+            multi_gpu_device_ids=self.multi_gpu_device_ids,
         )
         
         if self.gnn_manager.enabled:

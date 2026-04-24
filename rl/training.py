@@ -115,7 +115,8 @@ def select_actions(
         for i, ag in enumerate(agents):
             # Use GNN observation if available, otherwise flat state
             obs = gnn_observations[i] if gnn_observations and i in gnn_observations else state
-            raw.append(ag.Select_Action(obs, scenario, eps))
+            obs_device = obs.to(ag.device) if isinstance(obs, torch.Tensor) else obs
+            raw.append(ag.Select_Action(obs_device, scenario, eps).to(state.device))
         policy_seconds = time.perf_counter() - t0
         stacked = torch.stack(raw)
         actions = stacked.view(len(agents))
@@ -139,8 +140,8 @@ def compute_rewards_and_next_state(
     for i, ag in enumerate(agents):
         qos_i, reward_i, cap_i = ag.Get_Reward(actions, actions[i], state, scenario)
         qos[i] = qos_i
-        rewards[i] = reward_i
-        capacity[i] = cap_i
+        rewards[i] = reward_i.to(state.device)
+        capacity[i] = cap_i.to(state.device)
         # State representation is the QoS satisfaction of the previous step
         next_state[i] = qos_i
     return rewards, qos, next_state, capacity
@@ -210,9 +211,17 @@ def store_and_learn(
             # Flat mode: use shared state
             agent_state = state
             agent_next_state = next_state
+
+        # Keep per-agent tensors on the same device as that agent's model.
+        if isinstance(agent_state, torch.Tensor):
+            agent_state = agent_state.to(ag.device)
+        if isinstance(agent_next_state, torch.Tensor):
+            agent_next_state = agent_next_state.to(ag.device)
+        action_i = actions[i].to(ag.device) if isinstance(actions, torch.Tensor) else actions[i]
+        reward_i = rewards[i].to(ag.device) if isinstance(rewards, torch.Tensor) else rewards[i]
         
         t0 = time.perf_counter()
-        ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario)
+        ag.Save_Transition(agent_state, action_i, agent_next_state, reward_i, scenario)
         store_transition_seconds += time.perf_counter() - t0
 
     if do_optimize:
@@ -234,6 +243,7 @@ def store_and_learn(
                 parallel_opt
                 and state.device.type == "cuda"
                 and len(agents) > 1
+                and len({ag.device.index for ag in agents if ag.device.type == "cuda"}) == 1
             )
 
             if use_parallel_streams:
@@ -315,6 +325,7 @@ def create_agents(
     device,
     mobility_manager=None,
     gnn_input_dim: int = None,
+    multi_gpu_device_ids: Optional[List[int]] = None,
 ) -> List[Agent]:
     """Create agents (UEs) for the simulation.
     
@@ -331,11 +342,22 @@ def create_agents(
     """
     shared_networks = None
     shared_memory = None
+    multi_gpu_enabled = bool(getattr(opt, "multi_gpu_enabled", False))
+    multi_gpu_device_ids = multi_gpu_device_ids or []
+    primary_device = device
+
+    if multi_gpu_enabled and multi_gpu_device_ids:
+        primary_device = torch.device(f"cuda:{multi_gpu_device_ids[0]}")
     
     if SHARED_AGENT_NETWORKS:
         # Create single shared network for all agents
-        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
-        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
+        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(primary_device)
+        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(primary_device)
+
+        if multi_gpu_enabled and len(multi_gpu_device_ids) >= 2:
+            model_policy = torch.nn.DataParallel(model_policy, device_ids=multi_gpu_device_ids)
+            model_target = torch.nn.DataParallel(model_target, device_ids=multi_gpu_device_ids)
+
         model_target.load_state_dict(model_policy.state_dict())
         model_target.eval()
         
@@ -351,7 +373,7 @@ def create_agents(
             momentum=momentum,
         )
         dqn_optimizer = DQNOptimizer(
-            model_policy, model_target, optimizer, opt, device
+            model_policy, model_target, optimizer, opt, primary_device
         )
         shared_networks = (model_policy, model_target, optimizer, dqn_optimizer)
         
@@ -363,20 +385,31 @@ def create_agents(
         else:
             shared_memory = ReplayMemory(shared_capacity)
     
-    return [
-        Agent(
-            opt,
-            sce,
-            scenario,
-            index=i,
-            device=device,
-            mobility_manager=mobility_manager,
-            input_dim=gnn_input_dim,
-            shared_networks=shared_networks,
-            shared_memory=shared_memory,
+    agents: List[Agent] = []
+    for i in range(opt.nagents):
+        if shared_networks is not None:
+            agent_device = primary_device
+        elif multi_gpu_enabled and len(multi_gpu_device_ids) >= 2:
+            gpu_id = multi_gpu_device_ids[i % len(multi_gpu_device_ids)]
+            agent_device = torch.device(f"cuda:{gpu_id}")
+        else:
+            agent_device = device
+
+        agents.append(
+            Agent(
+                opt,
+                sce,
+                scenario,
+                index=i,
+                device=agent_device,
+                mobility_manager=mobility_manager,
+                input_dim=gnn_input_dim,
+                shared_networks=shared_networks,
+                shared_memory=shared_memory,
+            )
         )
-        for i in range(opt.nagents)
-    ]
+
+    return agents
 
 
 class GNNObservationManager:

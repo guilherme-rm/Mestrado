@@ -30,6 +30,8 @@
    "diag_interval": 10,
    "parallel_agent_optimization": true,
    "parallel_opt_max_streams": 4,
+   "multi_gpu_auto": true,
+   "multi_gpu_min_memory_gb": 8.0,
    "cuda": 0,
    
    "enable_plot": true,
@@ -66,6 +68,8 @@
       "diag_interval": "Compute gradient norm every N optimize steps.",
       "parallel_agent_optimization": "Use CUDA streams to overlap independent agent optimize calls.",
       "parallel_opt_max_streams": "Maximum CUDA streams used for parallel agent optimization.",
+      "multi_gpu_auto": "Auto-enable multi-GPU training when >=2 GPUs satisfy the memory threshold.",
+      "multi_gpu_min_memory_gb": "Minimum total memory (GB) required per GPU to be considered for multi-GPU.",
       "cuda": "GPU toggle (auto-detected if available).",
       "enable_plot": "Enable real-time training plot generation.",
       "plot_interval": "Render frequency (steps or episodes).",
