@@ -199,11 +199,18 @@ class EpisodeMetrics:
     
     def record_step(self, rewards: torch.Tensor, qos: torch.Tensor, capacity: torch.Tensor):
         """Record environment metrics from a single step."""
-        mean_reward = float(rewards.mean().item())
+        stat_vec = torch.stack(
+            [rewards.mean(), rewards.sum(), qos.mean(), capacity.sum()]
+        ).detach().cpu()
+        mean_reward = float(stat_vec[0])
+        return_total = float(stat_vec[1])
+        qos_mean = float(stat_vec[2])
+        capacity_sum = float(stat_vec[3])
+
         self.reward_sum += mean_reward
-        self.return_total += float(rewards.sum().item())
-        self.qos_sum += float(qos.mean().item())
-        self.capacity_sum += float(capacity.sum().item())
+        self.return_total += return_total
+        self.qos_sum += qos_mean
+        self.capacity_sum += capacity_sum
         
         # Track reward distribution
         self.reward_min = min(self.reward_min, mean_reward)
@@ -211,7 +218,7 @@ class EpisodeMetrics:
         self.reward_squared_sum += mean_reward ** 2
         
         # Track QoS success (full satisfaction)
-        if float(qos.mean().item()) >= 1.0:
+        if qos_mean >= 1.0:
             self.qos_success_count += 1
         
         self.steps += 1
@@ -513,10 +520,14 @@ class EpisodeRunner:
         record_step_metrics_seconds = time.perf_counter() - t0
         
         # Prepare step metrics for logging
+        step_stat_vec = torch.stack(
+            [self.ctx.rewards.mean(), self.ctx.qos.mean(), capacity.sum()]
+        ).detach().cpu()
+
         step_metrics = {
-            "mean_reward": float(self.ctx.rewards.mean().item()),
-            "qos_mean": float(self.ctx.qos.mean().item()),
-            "capacity_sum": float(capacity.sum().item()),
+            "mean_reward": float(step_stat_vec[0]),
+            "qos_mean": float(step_stat_vec[1]),
+            "capacity_sum": float(step_stat_vec[2]),
             "timing": {
                 "run_step_seconds": time.perf_counter() - step_t0,
                 "gnn_encode_seconds": gnn_encode_seconds,
@@ -576,11 +587,15 @@ class EpisodeRunner:
     def _record_actions(self):
         """Record actions for debugging."""
         if self.action_tail_len > 0:
+            if isinstance(self.ctx.actions, torch.Tensor):
+                action_values = self.ctx.actions.detach().cpu().tolist()
+            else:
+                action_values = list(self.ctx.actions)
             for i in range(self.config.nagents):
                 try:
-                    self.last_actions[i].append(int(self.ctx.actions[i].item()))
+                    self.last_actions[i].append(int(action_values[i]))
                 except Exception:
-                    self.last_actions[i].append(int(self.ctx.actions[i]))
+                    self.last_actions[i].append(0)
 
 
 class Trainer:

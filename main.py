@@ -202,6 +202,14 @@ def main():
     # Print device info
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+
+    if device.type == "cuda":
+        # Favor throughput on modern NVIDIA GPUs.
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        if hasattr(torch, "set_float32_matmul_precision"):
+            torch.set_float32_matmul_precision("high")
     
     # Print config summary
     print(f"\n--- Configuration Summary ---")

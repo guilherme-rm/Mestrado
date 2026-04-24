@@ -4,6 +4,7 @@
   
   "//_RL_HYPERPARAMETERS": "",
   "learning_rate": 0.0005,
+  "momentum": 0.005,
   "gamma": 0.99,
   "batch_size": 128,
   "tau": 0.005,
@@ -13,6 +14,10 @@
   "min_memory_for_learning": 2000,
 
   "//_EXPLORATION": "",
+  "epsilon_policy": "exponential_decay",
+  "eps_min": 0.0,
+  "eps_max": 0.9,
+  "eps_increment": 0.003,
   "eps_start": 1.0,
   "eps_end": 0.05,
   "eps_decay_steps": 50000,
@@ -22,9 +27,16 @@
   "//_TRAINING_DURATION": "",
   "nepisodes": 25000,
   "nsteps": 50,
+  "nupdate": 50,
 
   "//_MISC": "",
   "early_termination": true,
+  "learn_every": 1,
+  "use_amp": true,
+  "metrics_interval": 10,
+  "diag_interval": 10,
+  "parallel_agent_optimization": true,
+  "parallel_opt_max_streams": 4,
   "cuda": 0,
 
   "//_LOGGING_PLOTTING": "",

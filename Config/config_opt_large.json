@@ -24,6 +24,12 @@
    "nupdate": 50,
    
    "early_termination": true,
+   "learn_every": 1,
+   "use_amp": true,
+   "metrics_interval": 10,
+   "diag_interval": 10,
+   "parallel_agent_optimization": true,
+   "parallel_opt_max_streams": 4,
    "cuda": 0,
    
    "enable_plot": true,
