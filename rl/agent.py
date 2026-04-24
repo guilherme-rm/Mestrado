@@ -314,8 +314,14 @@ class DQNOptimizer:
         self.optimizer = optimizer
         self.opt = opt
         self.device = device
-        self._amp_enabled = bool(getattr(opt, "amp_enabled", device.type == "cuda"))
+        amp_cfg = getattr(opt, "use_amp", None)
+        if amp_cfg is None:
+            amp_cfg = getattr(opt, "amp_enabled", device.type == "cuda")
+        self._amp_enabled = bool(amp_cfg) and device.type == "cuda"
         self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        self._metrics_interval = max(1, int(getattr(opt, "metrics_interval", 1) or 1))
+        self._diag_interval = max(1, int(getattr(opt, "diag_interval", 1) or 1))
+        self._opt_step = 0
         
         # Store last training metrics
         self._last_metrics: TrainMetrics = TrainMetrics()
@@ -339,6 +345,7 @@ class DQNOptimizer:
         Returns:
             TrainMetrics with statistics from this optimization step.
         """
+        prev_metrics = self._last_metrics
         self._last_metrics = TrainMetrics()
         
         if len(memory) < self.opt.batch_size:
@@ -382,7 +389,13 @@ class DQNOptimizer:
         self._scaler.scale(loss).backward()
         self._scaler.unscale_(self.optimizer)
 
-        grad_norm = self._compute_grad_norm()
+        self._opt_step += 1
+        collect_diag = (self._opt_step % self._diag_interval) == 0
+        collect_metrics = (self._opt_step % self._metrics_interval) == 0
+
+        grad_norm = prev_metrics.grad_norm
+        if collect_diag:
+            grad_norm = self._compute_grad_norm()
 
         for param in self.model_policy.parameters():
             if param.grad is not None:
@@ -391,29 +404,44 @@ class DQNOptimizer:
         self._scaler.step(self.optimizer)
         self._scaler.update()
 
-        # Extract scalar diagnostics with one host transfer.
-        metric_vec = torch.stack(
-            [
-                loss.detach(),
-                q_all.mean().detach(),
-                q_all.max().detach(),
-                q_all.min().detach(),
-                q_all.std().detach(),
-                target_q.mean().detach(),
-                td_error.mean().detach(),
-            ]
-        ).cpu()
+        loss_scalar = float(loss.detach().cpu())
+
+        if collect_metrics:
+            # Extract scalar diagnostics with one host transfer.
+            metric_vec = torch.stack(
+                [
+                    q_all.mean().detach(),
+                    q_all.max().detach(),
+                    q_all.min().detach(),
+                    q_all.std().detach(),
+                    target_q.mean().detach(),
+                    td_error.mean().detach(),
+                ]
+            ).cpu()
+            mean_q = float(metric_vec[0])
+            max_q = float(metric_vec[1])
+            min_q = float(metric_vec[2])
+            q_std = float(metric_vec[3])
+            target_q_mean = float(metric_vec[4])
+            td_error_value = float(metric_vec[5])
+        else:
+            mean_q = prev_metrics.mean_q
+            max_q = prev_metrics.max_q
+            min_q = prev_metrics.min_q
+            q_std = prev_metrics.q_std
+            target_q_mean = prev_metrics.target_q_mean
+            td_error_value = prev_metrics.td_error
 
         # Store metrics
         self._last_metrics = TrainMetrics(
-            loss=float(metric_vec[0]),
-            mean_q=float(metric_vec[1]),
-            max_q=float(metric_vec[2]),
-            min_q=float(metric_vec[3]),
-            q_std=float(metric_vec[4]),
+            loss=loss_scalar,
+            mean_q=mean_q,
+            max_q=max_q,
+            min_q=min_q,
+            q_std=q_std,
             grad_norm=grad_norm,
-            target_q_mean=float(metric_vec[5]),
-            td_error=float(metric_vec[6]),
+            target_q_mean=target_q_mean,
+            td_error=td_error_value,
             did_learn=True,
         )
         
@@ -511,6 +539,41 @@ class ActionSelector:
             Selected action index
         """
         return self._select(q_values, epsilon)
+
+    def select_batch(self, q_values_batch: torch.Tensor, epsilon: float) -> torch.Tensor:
+        """Batch action selection for tensor of shape (batch, n_actions)."""
+        if q_values_batch.dim() != 2:
+            raise ValueError("q_values_batch must have shape (batch, n_actions)")
+
+        batch_size, n_actions = q_values_batch.shape
+        device = q_values_batch.device
+
+        if self.strategy == "greedy":
+            return q_values_batch.argmax(dim=1)
+
+        if self.strategy == "epsilon_greedy":
+            greedy = q_values_batch.argmax(dim=1)
+            random_actions = torch.randint(0, n_actions, (batch_size,), device=device)
+            exploit_mask = torch.rand(batch_size, device=device) > epsilon
+            return torch.where(exploit_mask, greedy, random_actions)
+
+        if self.strategy == "epsilon_greedy_original":
+            greedy = q_values_batch.argmax(dim=1)
+            random_actions = torch.randint(0, n_actions, (batch_size,), device=device)
+            exploit_mask = torch.rand(batch_size, device=device) < epsilon
+            return torch.where(exploit_mask, greedy, random_actions)
+
+        if self.strategy == "boltzmann":
+            temperature = max(epsilon, 0.01)
+            probs = torch.softmax(q_values_batch / temperature, dim=1)
+            return torch.multinomial(probs, 1).squeeze(1)
+
+        if self.strategy == "langevin":
+            # Langevin uses iterative dynamics; keep per-row implementation.
+            actions = [self._langevin(q_values_batch[i], epsilon) for i in range(batch_size)]
+            return torch.tensor(actions, device=device, dtype=torch.long)
+
+        raise ValueError(f"Unknown strategy: {self.strategy}")
         
 class Agent:
     

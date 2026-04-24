@@ -72,13 +72,12 @@ def select_actions(
         forward_seconds = time.perf_counter() - t0
         
         t0 = time.perf_counter()
-        raw = []
-        for ag in agents:
-            action = ag._action_selector.select(q_values, eps)
-            raw.append(torch.tensor(action, device=state.device))
+        if q_values.dim() == 1:
+            q_batch = q_values.unsqueeze(0).expand(len(agents), -1)
+        else:
+            q_batch = q_values.expand(len(agents), -1)
+        actions = agents[0]._action_selector.select_batch(q_batch, eps)
         policy_seconds = time.perf_counter() - t0
-        stacked = torch.stack(raw)
-        actions = stacked.view(len(agents))
         if return_timing:
             return actions, {
                 "select_actions_forward_seconds": forward_seconds,
@@ -99,13 +98,8 @@ def select_actions(
         forward_seconds = time.perf_counter() - t0
         
         t0 = time.perf_counter()
-        raw = []
-        for i, ag in enumerate(agents):
-            action = ag._action_selector.select(all_q_values[i], eps)
-            raw.append(torch.tensor(action, device=state.device))
+        actions = agents[0]._action_selector.select_batch(all_q_values, eps)
         policy_seconds = time.perf_counter() - t0
-        stacked = torch.stack(raw)
-        actions = stacked.view(len(agents))
         if return_timing:
             return actions, {
                 "select_actions_forward_seconds": forward_seconds,
@@ -192,6 +186,10 @@ def store_and_learn(
     
     # Check if using shared networks (all agents share same network)
     uses_shared = agents[0].uses_shared_networks if agents else False
+    learn_every = max(1, int(getattr(opt, "learn_every", 1) or 1))
+    do_optimize = (step_idx % learn_every) == 0
+    parallel_opt = bool(getattr(opt, "parallel_agent_optimization", False))
+    max_streams = max(1, int(getattr(opt, "parallel_opt_max_streams", 4) or 1))
     
     all_metrics: List[TrainMetrics] = []
     store_transition_seconds = 0.0
@@ -217,31 +215,58 @@ def store_and_learn(
         ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario)
         store_transition_seconds += time.perf_counter() - t0
 
+    if do_optimize:
         if uses_shared:
             # With shared networks: only optimize once (on first agent)
-            # All agents share the same network, so one update is enough
-            if i == 0:
-                t0 = time.perf_counter()
-                metrics = ag.Optimize_Model()
-                optimize_seconds += time.perf_counter() - t0
-                if metrics.did_learn:
-                    all_metrics.append(metrics)
-                # Hard target update (only once since networks are shared)
-                if step_idx % nupdate == 0:
-                    t0 = time.perf_counter()
-                    ag.Target_Update()
-                    target_update_seconds += time.perf_counter() - t0
-        else:
-            # Independent networks: optimize each agent separately
             t0 = time.perf_counter()
-            metrics = ag.Optimize_Model()
+            metrics = agents[0].Optimize_Model()
             optimize_seconds += time.perf_counter() - t0
             if metrics.did_learn:
                 all_metrics.append(metrics)
+
+            # Hard target update (only once since networks are shared)
+            if step_idx % nupdate == 0:
+                t0 = time.perf_counter()
+                agents[0].Target_Update()
+                target_update_seconds += time.perf_counter() - t0
+        else:
+            use_parallel_streams = (
+                parallel_opt
+                and state.device.type == "cuda"
+                and len(agents) > 1
+            )
+
+            if use_parallel_streams:
+                n_streams = min(max_streams, len(agents))
+                streams = [torch.cuda.Stream(device=state.device) for _ in range(n_streams)]
+                metrics_buffer: List[Optional[TrainMetrics]] = [None] * len(agents)
+
+                t0 = time.perf_counter()
+                for idx, ag in enumerate(agents):
+                    stream = streams[idx % n_streams]
+                    with torch.cuda.stream(stream):
+                        metrics_buffer[idx] = ag.Optimize_Model()
+                for stream in streams:
+                    stream.synchronize()
+                optimize_seconds += time.perf_counter() - t0
+
+                for metrics in metrics_buffer:
+                    if metrics is not None and metrics.did_learn:
+                        all_metrics.append(metrics)
+            else:
+                # Independent networks: optimize each agent separately
+                for ag in agents:
+                    t0 = time.perf_counter()
+                    metrics = ag.Optimize_Model()
+                    optimize_seconds += time.perf_counter() - t0
+                    if metrics.did_learn:
+                        all_metrics.append(metrics)
+
             # Hard target update every nupdate steps (like original UARA-DRL)
             if step_idx % nupdate == 0:
                 t0 = time.perf_counter()
-                ag.Target_Update()
+                for ag in agents:
+                    ag.Target_Update()
                 target_update_seconds += time.perf_counter() - t0
 
     timing = {
