@@ -314,11 +314,10 @@ class DQNOptimizer:
         self.optimizer = optimizer
         self.opt = opt
         self.device = device
-        amp_cfg = getattr(opt, "use_amp", None)
-        if amp_cfg is None:
-            amp_cfg = getattr(opt, "amp_enabled", device.type == "cuda")
-        self._amp_enabled = bool(amp_cfg) and device.type == "cuda"
-        self._scaler = torch.cuda.amp.GradScaler(enabled=self._amp_enabled)
+        from functions.gpu_manager import GPUManager
+        _gm = GPUManager.from_opt(opt)
+        self._amp_enabled = _gm.amp_enabled
+        self._scaler = _gm.make_grad_scaler()
         self._metrics_interval = max(1, int(getattr(opt, "metrics_interval", 1) or 1))
         self._diag_interval = max(1, int(getattr(opt, "diag_interval", 1) or 1))
         self._opt_step = 0
