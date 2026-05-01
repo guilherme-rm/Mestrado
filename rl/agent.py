@@ -11,6 +11,7 @@ from numpy import pi
 import torch
 
 from constants import GRAD_CLIP_VALUE, USE_TENSOR_REPLAY_BUFFER
+from telecom.environment_factory import create_reward_calculator
 from telecom.mobility import MobilityManager
 
 
@@ -83,14 +84,24 @@ class LocationManager:
             self._location = self._initialize_location(scenario)
     
     def _initialize_location(self, scenario) -> torch.Tensor:
-        """Initialize UE location within MBS coverage (legacy mode)."""
-        Loc_MBS, _, _ = scenario.BS_Location()
+        """Initialize UE location. Uses area-uniform placement for cell-free,
+        or MBS-anchored placement for HetNet (legacy mode)."""
         Loc_agent = np.zeros(2)
-        LocM = choice(Loc_MBS)
-        r = self.sce.rMBS * random()
-        theta = uniform(-pi, pi)
-        Loc_agent[0] = LocM[0] + r * np.cos(theta)
-        Loc_agent[1] = LocM[1] + r * np.sin(theta)
+        rMBS = getattr(self.sce, "rMBS", None)
+        if rMBS is not None:
+            # HetNet: place within a random MBS coverage radius
+            Loc_MBS, _, _ = scenario.BS_Location()
+            LocM = choice(Loc_MBS)
+            r = rMBS * random()
+            theta = uniform(-pi, pi)
+            Loc_agent[0] = LocM[0] + r * np.cos(theta)
+            Loc_agent[1] = LocM[1] + r * np.sin(theta)
+        else:
+            # Cell-Free: place uniformly within the deployment area
+            area_w = float(getattr(self.sce, "area_width", 2000.0) or 2000.0)
+            area_h = float(getattr(self.sce, "area_height", area_w) or area_w)
+            Loc_agent[0] = uniform(0.0, area_w)
+            Loc_agent[1] = uniform(0.0, area_h)
         return torch.tensor(Loc_agent, device=self.device, dtype=torch.float32)
     
     def update_location(self) -> None:
@@ -315,9 +326,7 @@ class DQNOptimizer:
         self.opt = opt
         self.device = device
         from functions.gpu_manager import GPUManager
-        _gm = GPUManager.from_opt(opt)
-        self._amp_enabled = _gm.amp_enabled
-        self._scaler = _gm.make_grad_scaler()
+        self._amp_enabled, self._scaler = GPUManager.build_amp_context(opt, device)
         self._metrics_interval = max(1, int(getattr(opt, "metrics_interval", 1) or 1))
         self._diag_interval = max(1, int(getattr(opt, "diag_interval", 1) or 1))
         self._opt_step = 0
@@ -616,7 +625,12 @@ class Agent:
             ue_index=index,
             mobility_manager=mobility_manager,
         )
-        self._reward_calculator = RewardCalculator(sce, opt, device)
+        self._reward_calculator = create_reward_calculator(
+            sce,
+            opt,
+            device,
+            fallback_cls=RewardCalculator,
+        )
         self._action_selector = ActionSelector(
             strategy=(getattr(opt, "action_strategy", None) or "epsilon_greedy")
         )

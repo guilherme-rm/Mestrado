@@ -14,7 +14,7 @@ from telecom.scenario import Scenario
 
 
 # Node/Edge type encodings
-NODE_TYPE_UE, NODE_TYPE_MBS, NODE_TYPE_PBS, NODE_TYPE_FBS = 0, 1, 2, 3
+NODE_TYPE_UE, NODE_TYPE_MBS, NODE_TYPE_PBS, NODE_TYPE_FBS, NODE_TYPE_AP = 0, 1, 2, 3, 4
 EDGE_TYPE_COMM, EDGE_TYPE_POTENTIAL, EDGE_TYPE_INTERF = 0, 1, 2
 PROXIMITY_THRESHOLD_METERS = 200.0
 
@@ -50,7 +50,14 @@ class WirelessGraphBuilder:
         self._bs_types = [bs.bs_type for bs in self._bs_list]
         self._n_channel = scenario.sce.nChannel
         self._n_bs = len(self._bs_list)
-        self._type_map = {"MBS": NODE_TYPE_MBS, "PBS": NODE_TYPE_PBS, "FBS": NODE_TYPE_FBS}
+        self._type_map = {
+            "MBS": NODE_TYPE_MBS,
+            "PBS": NODE_TYPE_PBS,
+            "FBS": NODE_TYPE_FBS,
+            "AP": NODE_TYPE_AP,
+        }
+        # Max type code used for [0,1] normalization; update if new types are added
+        self._type_norm = float(max(self._type_map.values()))
         self._bs_positions_t = torch.as_tensor(self._bs_positions, device=self.device, dtype=torch.float32)
         self._bs_powers_t = torch.as_tensor(self._bs_powers, device=self.device, dtype=torch.float32)
         self._bs_radii_t = torch.as_tensor(self._bs_radii, device=self.device, dtype=torch.float32)
@@ -102,7 +109,7 @@ class WirelessGraphBuilder:
             x[n_ues+j, :2] = self._bs_positions_t[j] / max_pos
             x[n_ues+j, 2] = self._bs_powers_t[j] / 50.0
             x[n_ues+j, 3] = self._bs_radii_t[j] / max_r
-            x[n_ues+j, 4] = self._type_map.get(self._bs_types[j], 1) / 3.0
+            x[n_ues+j, 4] = self._type_map.get(self._bs_types[j], NODE_TYPE_MBS) / self._type_norm
             x[n_ues+j, 5] = bs_loads[j] / max(len(ue_pos), 1)
         
         return x

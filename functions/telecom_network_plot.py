@@ -30,11 +30,10 @@ Usage:
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from telecom.scenario import Scenario
 from telecom.mobility import MobilityManager, Hotspot
 from telecom.interference import InterferenceEdge
 from rl.agent import Agent
@@ -65,6 +64,9 @@ BS_COLORS = {
     "PBS": "#3498DB",  # Blue for Pico BS
     "FBS": "#2ECC71",  # Green for Femto BS
 }
+AP_COLOR = "#1ABC9C"   # Teal for distributed Access Points (Cell-Free)
+BS_COLORS["AP"] = AP_COLOR
+BS_COLORS_DEFAULT = "#95A5A6"  # Gray fallback for unknown types
 
 # Color for UEs
 UE_COLOR = "#9B59B6"  # Purple for User Equipment
@@ -98,7 +100,7 @@ class TelecomNetworkPlotter:
 
     def __init__(
         self,
-        scenario: Scenario,
+        scenario,
         agents: List[Agent],
         enabled: bool = TELECOM_PLOT_ENABLED,
         plot_interval: int = TELECOM_PLOT_INTERVAL,
@@ -110,6 +112,7 @@ class TelecomNetworkPlotter:
         mobility_manager: Optional[MobilityManager] = None,
         show_hotspots: bool = True,
         show_interference: bool = True,
+        environment_type: str = "hetnet",
         deferred: bool = False,
     ):
         """Initialize the telecom network plotter.
@@ -141,6 +144,7 @@ class TelecomNetworkPlotter:
         self.mobility_manager = mobility_manager
         self.show_hotspots = show_hotspots
         self.show_interference = show_interference
+        self.environment_type = str(environment_type).strip().lower()
         self.deferred = deferred
         
         # Cache for current connections (updated externally)
@@ -148,6 +152,7 @@ class TelecomNetworkPlotter:
         self._current_step: int = 0
         self._current_episode: int = 0
         self._interference_edges: List[InterferenceEdge] = []
+        self._cellfree_diagnostics: Dict[str, Any] = {}
         
         # UE position history for trace visualization
         self._ue_traces: List[List[np.ndarray]] = [[] for _ in range(len(agents))]
@@ -161,6 +166,7 @@ class TelecomNetworkPlotter:
         episode: int = 0,
         actions: Optional[List[int]] = None,
         interference_edges: Optional[List[InterferenceEdge]] = None,
+        cellfree_diagnostics: Optional[Dict[str, Any]] = None,
     ):
         """Update the network topology plot.
 
@@ -169,6 +175,7 @@ class TelecomNetworkPlotter:
             episode: Current episode number.
             actions: List of action indices for each agent (BS_idx * nChannel + Ch_idx).
             interference_edges: List of InterferenceEdge objects for visualization.
+            cellfree_diagnostics: Optional cell-free specific diagnostics (clusters/load/cpu).
         """
         if not self.enabled:
             return
@@ -177,6 +184,7 @@ class TelecomNetworkPlotter:
         self._current_episode = episode
         self._current_actions = actions
         self._interference_edges = interference_edges or []
+        self._cellfree_diagnostics = cellfree_diagnostics or {}
         
         # Record UE positions for trace
         if UE_TRACE_ENABLED:
@@ -194,6 +202,12 @@ class TelecomNetworkPlotter:
             return
         
         self._render()
+
+    def _is_cell_free_mode(self) -> bool:
+        if self.environment_type == "cell_free":
+            return True
+        bs_list = self.scenario.Get_BaseStations()
+        return any(getattr(bs, "bs_type", "") == "AP" for bs in bs_list)
 
     def _get_bs_positions(self):
         """Extract base station positions and types."""
@@ -282,6 +296,10 @@ class TelecomNetworkPlotter:
         """Render the network topology plot."""
         if plt is None:
             return
+
+        if self._is_cell_free_mode():
+            self._render_cell_free()
+            return
         
         # Get positions
         bs_positions, bs_types, bs_radii = self._get_bs_positions()
@@ -337,7 +355,7 @@ class TelecomNetworkPlotter:
         # Draw coverage circles (if enabled and not auto-hidden)
         if vp["show_coverage"]:
             for pos, bs_type, radius in zip(bs_positions, bs_types, bs_radii):
-                color = BS_COLORS.get(bs_type, "gray")
+                color = BS_COLORS.get(bs_type, BS_COLORS_DEFAULT)
                 # Filled circle with light shade
                 fill_circle = Circle(
                     (pos[0], pos[1]),
@@ -409,7 +427,7 @@ class TelecomNetworkPlotter:
         
         # Draw base stations as simple colored dots
         for i, (pos, bs_type) in enumerate(zip(bs_positions, bs_types)):
-            color = BS_COLORS.get(bs_type, "gray")
+            color = BS_COLORS.get(bs_type, BS_COLORS_DEFAULT)
             
             ax.scatter(
                 pos[0], pos[1],
@@ -462,16 +480,23 @@ class TelecomNetworkPlotter:
             )
         
         # Create legend
-        legend_elements = [
-            Line2D([0], [0], marker="o", color="w", markerfacecolor=BS_COLORS["MBS"],
-                   markersize=6, markeredgecolor="black", label=f"MBS ({self.scenario.sce.nMBS})"),
-            Line2D([0], [0], marker="o", color="w", markerfacecolor=BS_COLORS["PBS"],
-                   markersize=6, markeredgecolor="black", label=f"PBS ({self.scenario.sce.nPBS})"),
-            Line2D([0], [0], marker="o", color="w", markerfacecolor=BS_COLORS["FBS"],
-                   markersize=6, markeredgecolor="black", label=f"FBS ({self.scenario.sce.nFBS})"),
+        # Build legend entries for only BS types that actually appear in the scenario
+        seen_bs_types = {}
+        for bt in bs_types:
+            seen_bs_types.setdefault(bt, 0)
+            seen_bs_types[bt] += 1
+
+        legend_elements = []
+        for bt, count in seen_bs_types.items():
+            color = BS_COLORS.get(bt, BS_COLORS_DEFAULT)
+            legend_elements.append(
+                Line2D([0], [0], marker="o", color="w", markerfacecolor=color,
+                       markersize=6, markeredgecolor="black", label=f"{bt} ({count})")
+            )
+        legend_elements.append(
             Line2D([0], [0], marker="o", color="w", markerfacecolor=UE_CONNECTED_COLOR,
-                   markersize=6, markeredgecolor="black", label=f"UE ({len(self.agents)})"),
-        ]
+                   markersize=6, markeredgecolor="black", label=f"UE ({len(self.agents)})")
+        )
         
         if self.show_connections and connections:
             legend_elements.append(
@@ -537,6 +562,245 @@ class TelecomNetworkPlotter:
         """Clean up resources and render final plot if deferred."""
         if self.enabled and self.deferred:
             self._render()
+
+    def _render_cell_free(self):
+        """Render cell-free specific topology emphasizing clusters and CPU/AP load."""
+        bs_positions, bs_types, bs_radii = self._get_bs_positions()
+        ue_positions = self._get_ue_positions()
+        hotspots = self._get_hotspots() if self.show_hotspots else []
+        vp = self._get_visual_params(len(bs_positions), len(ue_positions))
+
+        plt.close("all")
+        fig, ax = plt.subplots(1, 1, figsize=TELECOM_PLOT_FIGSIZE)
+
+        all_x = [p[0] for p in bs_positions] + [p[0] for p in ue_positions]
+        all_y = [p[1] for p in bs_positions] + [p[1] for p in ue_positions]
+        if all_x and all_y:
+            margin = max(bs_radii) * 0.2 if bs_radii else 120
+            x_min, x_max = min(all_x) - margin, max(all_x) + margin
+            y_min, y_max = min(all_y) - margin, max(all_y) + margin
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            max_range = max(x_range, y_range)
+            x_center = (x_min + x_max) / 2
+            y_center = (y_min + y_max) / 2
+            ax.set_xlim(x_center - max_range / 2 - 60, x_center + max_range / 2 + 60)
+            ax.set_ylim(y_center - max_range / 2 - 60, y_center + max_range / 2 + 60)
+
+        if self.show_hotspots and hotspots:
+            for hotspot in hotspots:
+                hotspot_circle = Circle(
+                    (hotspot.position[0], hotspot.position[1]),
+                    hotspot.radius,
+                    fill=True,
+                    facecolor=HOTSPOT_FILL_COLOR,
+                    edgecolor=HOTSPOT_EDGE_COLOR,
+                    alpha=HOTSPOT_ALPHA,
+                    linewidth=1.5,
+                    linestyle="-",
+                    zorder=-1,
+                )
+                ax.add_patch(hotspot_circle)
+
+        diagnostics = self._cellfree_diagnostics or {}
+        serving_clusters = diagnostics.get("serving_clusters", {})
+        ap_loads = diagnostics.get("ap_loads", {})
+        cpu_positions = diagnostics.get("cpu_positions", {})
+        cpu_ap_links = diagnostics.get("cpu_ap_links", {})
+        cpu_loads = diagnostics.get("cpu_loads", {})
+
+        cpu_palette = ["#E67E22", "#34495E", "#8E44AD", "#16A085", "#C0392B", "#2980B9"]
+
+        # Draw fronthaul links AP <-> CPU
+        for cpu_id, ap_ids in cpu_ap_links.items():
+            cpu_pos = cpu_positions.get(int(cpu_id))
+            if cpu_pos is None:
+                continue
+            c = cpu_palette[int(cpu_id) % len(cpu_palette)]
+            for ap_id in ap_ids:
+                ap_id = int(ap_id)
+                if 0 <= ap_id < len(bs_positions):
+                    ap_pos = bs_positions[ap_id]
+                    ax.plot(
+                        [cpu_pos[0], ap_pos[0]],
+                        [cpu_pos[1], ap_pos[1]],
+                        color=c,
+                        linewidth=0.8,
+                        alpha=0.25,
+                        linestyle="--",
+                        zorder=0.5,
+                    )
+
+        # Draw serving clusters (UE -> multiple APs)
+        connected_ues = set()
+        for ue_idx, cluster in serving_clusters.items():
+            ue_idx = int(ue_idx)
+            if ue_idx >= len(ue_positions):
+                continue
+            ue_pos = ue_positions[ue_idx]
+            for ap_id in cluster:
+                ap_id = int(ap_id)
+                if 0 <= ap_id < len(bs_positions):
+                    ap_pos = bs_positions[ap_id]
+                    ax.plot(
+                        [ue_pos[0], ap_pos[0]],
+                        [ue_pos[1], ap_pos[1]],
+                        color="#00A9A5",
+                        linewidth=1.0,
+                        alpha=0.45,
+                        zorder=1.8,
+                    )
+                    connected_ues.add(ue_idx)
+
+        # Draw primary AP links based on selected action
+        if self._current_actions is not None:
+            n_channel = self.scenario.sce.nChannel
+            for ue_idx, action in enumerate(self._current_actions):
+                if action is None or ue_idx >= len(ue_positions):
+                    continue
+                ap_id = int(action) // n_channel
+                if 0 <= ap_id < len(bs_positions):
+                    ue_pos = ue_positions[ue_idx]
+                    ap_pos = bs_positions[ap_id]
+                    ax.plot(
+                        [ue_pos[0], ap_pos[0]],
+                        [ue_pos[1], ap_pos[1]],
+                        color="#D35400",
+                        linewidth=max(1.6, vp["connection_width"]),
+                        alpha=0.9,
+                        zorder=2.2,
+                    )
+                    connected_ues.add(ue_idx)
+
+        # Draw APs with size proportional to load
+        max_load = max([float(v) for v in ap_loads.values()], default=1.0)
+        for ap_id, (pos, bs_type) in enumerate(zip(bs_positions, bs_types)):
+            load = float(ap_loads.get(ap_id, 0.0))
+            size_scale = 1.0 + 0.9 * (load / max(1.0, max_load))
+            size = vp["bs_size"] * size_scale
+            color = BS_COLORS.get(bs_type, BS_COLORS_DEFAULT)
+
+            ax.scatter(
+                pos[0], pos[1],
+                c=color,
+                marker="o",
+                s=size,
+                edgecolors="black",
+                linewidths=0.6,
+                zorder=3,
+            )
+
+        # Draw CPU nodes
+        for cpu_id, cpu_pos in cpu_positions.items():
+            cpu_id = int(cpu_id)
+            c = cpu_palette[cpu_id % len(cpu_palette)]
+            util = float(cpu_loads.get(cpu_id, 0.0))
+            ax.scatter(
+                cpu_pos[0], cpu_pos[1],
+                c=c,
+                marker="s",
+                s=130,
+                edgecolors="black",
+                linewidths=0.8,
+                zorder=3.2,
+            )
+            ax.text(
+                cpu_pos[0], cpu_pos[1] + 18,
+                f"CPU{cpu_id} ({util:.2f})",
+                fontsize=8,
+                ha="center",
+                va="bottom",
+                color=c,
+                zorder=3.3,
+            )
+
+        # Draw interference edges (optional)
+        if self.show_interference and self._interference_edges and len(ue_positions) > 0:
+            max_strength = max(e.strength_db for e in self._interference_edges)
+            min_strength = min(e.strength_db for e in self._interference_edges)
+            strength_range = max_strength - min_strength if max_strength > min_strength else 1.0
+            for edge in self._interference_edges:
+                if edge.ue_i < len(ue_positions) and edge.ue_j < len(ue_positions):
+                    ue_i_pos = ue_positions[edge.ue_i]
+                    ue_j_pos = ue_positions[edge.ue_j]
+                    normalized_strength = (edge.strength_db - min_strength) / strength_range
+                    alpha = INTERFERENCE_EDGE_ALPHA_MIN + normalized_strength * (
+                        INTERFERENCE_EDGE_ALPHA_MAX - INTERFERENCE_EDGE_ALPHA_MIN
+                    )
+                    ax.plot(
+                        [ue_i_pos[0], ue_j_pos[0]],
+                        [ue_i_pos[1], ue_j_pos[1]],
+                        color=INTERFERENCE_EDGE_COLOR,
+                        linewidth=1.2,
+                        alpha=alpha,
+                        linestyle="-",
+                        zorder=1.5,
+                    )
+
+        # Draw UE movement traces
+        if UE_TRACE_ENABLED:
+            for trace in self._ue_traces:
+                if len(trace) >= 2:
+                    xs = [p[0] for p in trace]
+                    ys = [p[1] for p in trace]
+                    ax.plot(
+                        xs, ys,
+                        color=UE_TRACE_COLOR,
+                        linewidth=UE_TRACE_LINE_WIDTH,
+                        alpha=UE_TRACE_ALPHA,
+                        linestyle="-",
+                        zorder=3.5,
+                    )
+
+        # Draw UEs
+        for i, pos in enumerate(ue_positions):
+            color = UE_CONNECTED_COLOR if i in connected_ues else UE_COLOR
+            ax.scatter(
+                pos[0], pos[1],
+                c=color,
+                marker="o",
+                s=vp["ue_size"],
+                edgecolors="black",
+                linewidths=0.5,
+                zorder=4,
+            )
+
+        legend_elements = [
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=BS_COLORS.get("AP", AP_COLOR),
+                   markersize=7, markeredgecolor="black", label=f"AP ({len(bs_positions)})"),
+            Line2D([0], [0], marker="s", color="w", markerfacecolor=cpu_palette[0],
+                   markersize=7, markeredgecolor="black", label=f"CPU ({len(cpu_positions)})"),
+            Line2D([0], [0], marker="o", color="w", markerfacecolor=UE_CONNECTED_COLOR,
+                   markersize=7, markeredgecolor="black", label=f"UE ({len(self.agents)})"),
+            Line2D([0], [0], color="#00A9A5", linewidth=1.2, label="Serving Cluster Link"),
+            Line2D([0], [0], color="#D35400", linewidth=2.2, label="Primary AP Link"),
+            Line2D([0], [0], color=cpu_palette[0], linewidth=1.0, linestyle="--", label="Fronthaul Link"),
+        ]
+
+        if self.show_interference and self._interference_edges:
+            legend_elements.append(
+                Line2D([0], [0], color=INTERFERENCE_EDGE_COLOR, linewidth=1.2,
+                       alpha=0.3, label=f"Interference ({len(self._interference_edges)})")
+            )
+
+        ax.legend(handles=legend_elements, loc="upper right", fontsize=9, framealpha=0.9)
+        ax.set_xlabel("X Position (m)", fontsize=11)
+        ax.set_ylabel("Y Position (m)", fontsize=11)
+        ax.set_title(
+            f"Cell-Free Topology | Episode {self._current_episode}",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect("equal", adjustable="box")
+
+        fig.tight_layout()
+        try:
+            fig.savefig(self.out_path, dpi=TELECOM_PLOT_DPI)
+        except Exception as e:
+            print(f"Warning: Failed to save network topology plot: {e}")
+        finally:
+            plt.close(fig)
 
 
 __all__ = ["TelecomNetworkPlotter"]

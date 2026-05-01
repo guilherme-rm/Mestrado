@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Cell-Free Network Graph</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#07111a;overflow:hidden;font-family:'IBM Plex Mono',monospace}
+    canvas{display:block;width:100vw;height:100vh}
+    #legend{
+      position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+      display:flex;gap:18px;align-items:center;
+      background:rgba(7,17,26,0.78);border:1px solid #1e3a4a;
+      border-radius:40px;padding:9px 20px;
+      font-size:11.5px;color:#8ecac3;letter-spacing:.04em;
+      backdrop-filter:blur(8px);white-space:nowrap;
+    }
+    .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:middle}
+    .row{display:flex;align-items:center}
+    #info{
+      position:fixed;top:20px;left:50%;transform:translateX(-50%);
+      font-size:12px;color:#4a8c88;letter-spacing:.08em;text-transform:uppercase;
+    }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">Cell-Free Massive MIMO — User-Centric Association</div>
+<div id="legend">
+  <span class="row"><span class="dot" style="background:#4ce0c0"></span>Access Point</span>
+  <span class="row"><span class="dot" style="background:#f7b84b"></span>CPU</span>
+  <span class="row"><span class="dot" style="background:#e85d8a"></span>User Equipment</span>
+  <span class="row"><span class="dot" style="background:#4ce0c0"></span>AP–CPU link</span>
+  <span class="row"><span class="dot" style="background:#e85d8a"></span>Active association</span>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+const N_AP   = 18;
+const N_CPU  = 3;
+const N_UE   = 7;
+const SERVING_APS = 3;
+
+let W, H;
+function resize(){
+  W = canvas.width  = window.innerWidth  * devicePixelRatio;
+  H = canvas.height = window.innerHeight * devicePixelRatio;
+  canvas.style.width  = window.innerWidth  + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  initNodes();
+}
+window.addEventListener('resize', resize);
+
+const COL = {
+  ap:'#4ce0c0', cpu:'#f7b84b', ue:'#e85d8a', bg:'#07111a',
+};
+
+const lerp = (a,b,t) => a+(b-a)*t;
+const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+const rand  = (lo,hi) => lo+Math.random()*(hi-lo);
+
+let aps=[], ues=[], cpus=[];
+
+function cpuPos(i){
+  const cx=W*.5, cy=H*.5, r=Math.min(W,H)*.22;
+  const angle=(i/N_CPU)*Math.PI*2-Math.PI/2;
+  return {x:cx+r*Math.cos(angle), y:cy+r*Math.sin(angle)};
+}
+
+function initNodes(){
+  cpus = Array.from({length:N_CPU},(_,i)=>cpuPos(i));
+
+  const cols = Math.ceil(Math.sqrt(N_AP));
+  const rows = Math.ceil(N_AP/cols);
+  aps = Array.from({length:N_AP},(_,i)=>{
+    const col=i%cols, row=Math.floor(i/cols);
+    const gx=lerp(W*.07,W*.93,(col+.5+rand(-.28,.28))/cols);
+    const gy=lerp(H*.09,H*.91,(row+.5+rand(-.28,.28))/rows);
+    return {x:gx, y:gy, cpuId:i%N_CPU, pulse:rand(0,Math.PI*2),
+            coverR:rand(.09,.15)*Math.min(W,H)};
+  });
+
+  ues = Array.from({length:N_UE},()=>{
+    const ox=rand(W*.08,W*.92), oy=rand(H*.10,H*.90);
+    return {x:ox, y:oy, ox, oy, cluster:[],
+            linkAlpha:Array(N_AP).fill(0), movePhase:rand(0,Math.PI*2)};
+  });
+}
+
+function updateCluster(ue){
+  const sorted=aps.map((ap,i)=>({i,d:dist(ue,ap)})).sort((a,b)=>a.d-b.d);
+  ue.cluster=sorted.slice(0,SERVING_APS).map(x=>x.i);
+}
+
+function glowLine(x1,y1,x2,y2,color,alpha,width){
+  ctx.save();
+  ctx.globalAlpha=alpha*.22;
+  ctx.strokeStyle=color; ctx.lineWidth=width*3.5;
+  ctx.shadowColor=color; ctx.shadowBlur=12;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.globalAlpha=alpha;
+  ctx.lineWidth=width; ctx.shadowBlur=0;
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.restore();
+}
+
+function circle(x,y,r,color,glowR){
+  ctx.save();
+  if(glowR){
+    const g=ctx.createRadialGradient(x,y,r*.3,x,y,glowR);
+    g.addColorStop(0,color+'55'); g.addColorStop(1,color+'00');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,glowR,0,Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle=color; ctx.shadowColor=color; ctx.shadowBlur=14;
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+const packets=[];
+function spawnPacket(x1,y1,x2,y2,color){
+  if(Math.random()>.005) return;
+  packets.push({x1,y1,x2,y2,color,t:0,speed:rand(.004,.01)});
+}
+function drawPackets(){
+  for(let i=packets.length-1;i>=0;i--){
+    const p=packets[i]; p.t+=p.speed;
+    if(p.t>1){packets.splice(i,1);continue;}
+    const px=lerp(p.x1,p.x2,p.t), py=lerp(p.y1,p.y2,p.t);
+    ctx.save();
+    ctx.globalAlpha=Math.sin(p.t*Math.PI)*.9;
+    ctx.fillStyle=p.color; ctx.shadowColor=p.color; ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(px,py,3*devicePixelRatio,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawGrid(){
+  const step=Math.min(W,H)*.055;
+  ctx.save(); ctx.strokeStyle='rgba(30,58,74,0.3)'; ctx.lineWidth=.7;
+  for(let x=0;x<W;x+=step){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=step){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.restore();
+}
+
+function moveUEs(t){
+  ues.forEach(ue=>{
+    const s=t*.00038+ue.movePhase;
+    ue.x=ue.ox+Math.sin(s*1.1)*W*.17+Math.cos(s*.7)*W*.07;
+    ue.y=ue.oy+Math.cos(s*.9)*H*.13+Math.sin(s*1.3)*H*.06;
+    ue.x=Math.max(W*.04,Math.min(W*.96,ue.x));
+    ue.y=Math.max(H*.04,Math.min(H*.96,ue.y));
+    updateCluster(ue);
+    ue.linkAlpha=ue.linkAlpha.map((a,i)=>
+      ue.cluster.includes(i)?Math.min(1,a+.025):Math.max(0,a-.018));
+  });
+}
+
+function draw(t){
+  requestAnimationFrame(draw);
+
+  ctx.fillStyle=COL.bg; ctx.fillRect(0,0,W,H);
+  drawGrid();
+  moveUEs(t);
+
+  // AP coverage halos
+  aps.forEach(ap=>{
+    const pulse=.5+.5*Math.sin(t*.0012+ap.pulse);
+    const r=ap.coverR*(.93+.07*pulse);
+    const g=ctx.createRadialGradient(ap.x,ap.y,r*.1,ap.x,ap.y,r);
+    g.addColorStop(0,'rgba(76,224,192,0.055)');
+    g.addColorStop(1,'rgba(76,224,192,0.00)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(ap.x,ap.y,r,0,Math.PI*2); ctx.fill();
+  });
+
+  // CPU–AP backbone
+  aps.forEach(ap=>{
+    const cpu=cpus[ap.cpuId];
+    glowLine(ap.x,ap.y,cpu.x,cpu.y,COL.cpu,.16,1.0*devicePixelRatio);
+    spawnPacket(ap.x,ap.y,cpu.x,cpu.y,COL.cpu);
+    spawnPacket(cpu.x,cpu.y,ap.x,ap.y,COL.cpu);
+  });
+
+  // UE–AP associations
+  ues.forEach(ue=>{
+    aps.forEach((ap,ai)=>{
+      const a=ue.linkAlpha[ai]; if(a<.01) return;
+      glowLine(ue.x,ue.y,ap.x,ap.y,COL.ue,a*.78,1.4*devicePixelRatio);
+      spawnPacket(ue.x,ue.y,ap.x,ap.y,COL.ue);
+    });
+  });
+
+  drawPackets();
+
+  // APs
+  aps.forEach(ap=>{
+    const r=5*devicePixelRatio;
+    circle(ap.x,ap.y,r,COL.ap,r*5);
+    const pulse=.4+.6*Math.abs(Math.sin(t*.0016+ap.pulse));
+    ctx.save(); ctx.globalAlpha=pulse*.3;
+    ctx.strokeStyle=COL.ap; ctx.lineWidth=1.2*devicePixelRatio;
+    ctx.beginPath(); ctx.arc(ap.x,ap.y,r*(2.5+pulse*2),0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  });
+
+  // CPUs
+  cpus.forEach(cpu=>{
+    circle(cpu.x,cpu.y,9*devicePixelRatio,COL.cpu,9*6*devicePixelRatio);
+    ctx.save();
+    ctx.font=`bold ${10*devicePixelRatio}px IBM Plex Mono,monospace`;
+    ctx.fillStyle='#07111a'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('CPU',cpu.x,cpu.y);
+    ctx.restore();
+  });
+
+  // UEs
+  ues.forEach(ue=>{
+    const r=5.5*devicePixelRatio;
+    circle(ue.x,ue.y,r,COL.ue,r*5);
+    const pulse=.5+.5*Math.sin(t*.002+ue.movePhase);
+    ctx.save(); ctx.globalAlpha=pulse*.4;
+    ctx.strokeStyle=COL.ue; ctx.lineWidth=1*devicePixelRatio;
+    ctx.beginPath(); ctx.arc(ue.x,ue.y,r*(2.8+pulse*1.8),0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+  });
+}
+
+resize();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>

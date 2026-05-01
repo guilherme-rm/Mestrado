@@ -16,9 +16,45 @@ resulting ``GPUManager`` instance wherever device or AMP decisions are needed.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import torch
+import pynvml
+
+
+_NVML_READY = False
+
+
+def _init_nvml() -> bool:
+    """Initialize NVML exactly once.
+
+    Returns False if pynvml is unavailable or NVML initialization fails.
+    """
+    global _NVML_READY
+    if _NVML_READY:
+        return True
+    try:
+        pynvml.nvmlInit()
+        _NVML_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _device_index(device: Optional[torch.device] = None) -> int:
+    """Resolve a torch device to a CUDA index (default 0)."""
+    if device is not None and device.type == "cuda" and device.index is not None:
+        return int(device.index)
+    return 0
+
+
+def _nvml_handle(device_index: int):
+    if not _init_nvml():
+        return None
+    try:
+        return pynvml.nvmlDeviceGetHandleByIndex(int(device_index))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +65,14 @@ def get_free_vram_gb(device: torch.device) -> float:
     """Return free VRAM in GB for a CUDA device (0.0 on CPU)."""
     if device.type != "cuda":
         return 0.0
+    idx = _device_index(device)
+    handle = _nvml_handle(idx)
+    if handle is not None:
+        try:
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return float(info.free) / (1024 ** 3)
+        except Exception:
+            pass
     torch.cuda.synchronize(device)
     free_bytes, _ = torch.cuda.mem_get_info(device)
     return free_bytes / (1024 ** 3)
@@ -38,6 +82,14 @@ def get_total_vram_gb(device: torch.device) -> float:
     """Return total VRAM in GB for a CUDA device (0.0 on CPU)."""
     if device.type != "cuda":
         return 0.0
+    idx = _device_index(device)
+    handle = _nvml_handle(idx)
+    if handle is not None:
+        try:
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return float(info.total) / (1024 ** 3)
+        except Exception:
+            pass
     _, total_bytes = torch.cuda.mem_get_info(device)
     return total_bytes / (1024 ** 3)
 
@@ -46,6 +98,14 @@ def get_vram_mb(device: Optional[torch.device] = None) -> float:
     """Return currently allocated GPU memory in MB (used by resource plotter)."""
     if not torch.cuda.is_available():
         return 0.0
+    idx = _device_index(device)
+    handle = _nvml_handle(idx)
+    if handle is not None:
+        try:
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return float(info.used) / (1024 * 1024)
+        except Exception:
+            pass
     return torch.cuda.memory_allocated() / (1024 * 1024)
 
 
@@ -53,11 +113,28 @@ def get_total_vram_mb(device_index: int = 0) -> float:
     """Return total VRAM in MB for the given device index."""
     if not torch.cuda.is_available():
         return 0.0
+    handle = _nvml_handle(device_index)
+    if handle is not None:
+        try:
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return float(info.total) / (1024 * 1024)
+        except Exception:
+            pass
     return torch.cuda.get_device_properties(device_index).total_memory / (1024 * 1024)
 
 
 def get_device_name(device_index: int = 0) -> Optional[str]:
     """Return CUDA device name, or None if CUDA is unavailable."""
+    if torch.cuda.is_available() and _init_nvml():
+        handle = _nvml_handle(device_index)
+        if handle is not None:
+            try:
+                raw_name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(raw_name, bytes):
+                    return raw_name.decode("utf-8", errors="ignore")
+                return str(raw_name)
+            except Exception:
+                pass
     if torch.cuda.is_available():
         return torch.cuda.get_device_name(device_index)
     return None
@@ -65,6 +142,54 @@ def get_device_name(device_index: int = 0) -> Optional[str]:
 
 def cuda_available() -> bool:
     return torch.cuda.is_available()
+
+
+def nvml_available() -> bool:
+    """Return whether NVML telemetry is usable."""
+    return _init_nvml()
+
+
+def get_gpu_utilization_percent(device_index: int = 0) -> Optional[float]:
+    """Return GPU utilization percentage via NVML, if available."""
+    handle = _nvml_handle(device_index)
+    if handle is None:
+        return None
+    try:
+        util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+        return float(util.gpu)
+    except Exception:
+        return None
+
+
+def get_gpu_memory_used_mb(device_index: int = 0) -> Optional[float]:
+    """Return GPU used memory in MB via NVML, if available."""
+    handle = _nvml_handle(device_index)
+    if handle is None:
+        return None
+    try:
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        return float(info.used) / (1024 * 1024)
+    except Exception:
+        return None
+
+
+def get_free_total_bytes(device: torch.device) -> tuple[int, int]:
+    """Return (free_bytes, total_bytes) for a device, preferring NVML."""
+    if device.type != "cuda":
+        return 0, 0
+
+    idx = _device_index(device)
+    handle = _nvml_handle(idx)
+    if handle is not None:
+        try:
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return int(info.free), int(info.total)
+        except Exception:
+            pass
+
+    torch.cuda.synchronize(device)
+    free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+    return int(free_bytes), int(total_bytes)
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +273,16 @@ class GPUManager:
             batch_size_grad_overhead=float(_g("batch_size_grad_overhead", 5.0)),
         )
 
+    @staticmethod
+    def build_amp_context(opt, device: torch.device) -> tuple[bool, torch.cuda.amp.GradScaler]:
+        """Build (amp_enabled, GradScaler) without creating a full GPUManager."""
+        amp_cfg = getattr(opt, "use_amp", None)
+        if amp_cfg is None:
+            amp_cfg = getattr(opt, "amp_enabled", device.type == "cuda")
+        amp_enabled = bool(amp_cfg) and device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=amp_enabled)
+        return amp_enabled, scaler
+
     # ------------------------------------------------------------------
     # Device selection
     # ------------------------------------------------------------------
@@ -166,8 +301,17 @@ class GPUManager:
 
         eligible: List[int] = []
         for gpu_id in range(gpu_count):
-            props = torch.cuda.get_device_properties(gpu_id)
-            total_gb = props.total_memory / (1024 ** 3)
+            handle = _nvml_handle(gpu_id)
+            if handle is not None:
+                try:
+                    info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    total_gb = float(info.total) / (1024 ** 3)
+                except Exception:
+                    props = torch.cuda.get_device_properties(gpu_id)
+                    total_gb = props.total_memory / (1024 ** 3)
+            else:
+                props = torch.cuda.get_device_properties(gpu_id)
+                total_gb = props.total_memory / (1024 ** 3)
             if total_gb >= self._multi_gpu_min_memory_gb:
                 eligible.append(gpu_id)
 
@@ -238,8 +382,7 @@ class GPUManager:
             print("GPUManager batch-size auto-scale: skipped (CPU device)")
             return current_batch_size
 
-        torch.cuda.synchronize(self.device)
-        free_bytes, total_bytes = torch.cuda.mem_get_info(self.device)
+        free_bytes, total_bytes = get_free_total_bytes(self.device)
         budget = int(free_bytes * self._batch_size_vram_fraction)
 
         # 2 × state (float32) + 1 action (int32) + 1 reward (float32)
@@ -279,13 +422,17 @@ class GPUManager:
             "multi_gpu_device_ids": self.multi_gpu_device_ids,
             "amp_enabled": self.amp_enabled,
             "cuda_available": torch.cuda.is_available(),
+            "nvml_available": nvml_available(),
         }
         if torch.cuda.is_available():
-            info["cuda_device_name"] = torch.cuda.get_device_name(self.device)
+            info["cuda_device_name"] = get_device_name(_device_index(self.device))
             free_gb = get_free_vram_gb(self.device)
             total_gb = get_total_vram_gb(self.device)
             info["vram_free_gb"] = round(free_gb, 2)
             info["vram_total_gb"] = round(total_gb, 2)
+            util = get_gpu_utilization_percent(_device_index(self.device))
+            if util is not None:
+                info["gpu_utilization_percent"] = round(util, 2)
         return info
 
     def __repr__(self) -> str:

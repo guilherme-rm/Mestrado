@@ -12,6 +12,7 @@ import shutil
 from typing import Any, Dict, Iterable, List, Optional
 
 import torch
+from functions.gpu_manager import get_device_name, nvml_available
 
 
 def _serialize_config(obj) -> Dict[str, Any]:
@@ -62,6 +63,8 @@ def save_environment_snapshot(run_dir: RunDirectoryManager):
         "platform": platform.platform(),
         "torch_version": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
+        "nvml_available": nvml_available(),
+        "cuda_device": get_device_name(0) if torch.cuda.is_available() else None,
     }
     (run_dir.subpath("environment.json")).write_text(json.dumps(env, indent=2))
 
@@ -310,7 +313,8 @@ def write_experiment_summary(
         "platform": platform.platform(),
         "torch_version": torch.__version__,
         "cuda_available": torch.cuda.is_available(),
-        "cuda_device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "nvml_available": nvml_available(),
+        "cuda_device": get_device_name(0) if torch.cuda.is_available() else None,
     }
     
     # Build comprehensive summary

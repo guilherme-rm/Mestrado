@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>HetNet Model — Animated Graph</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:#080d14;overflow:hidden}
+    canvas{display:block;width:100vw;height:100vh}
+    #title{
+      position:fixed;top:18px;left:50%;transform:translateX(-50%);
+      font:600 11px/1 'IBM Plex Mono',monospace;
+      color:#4a7fa8;letter-spacing:.1em;text-transform:uppercase;
+      pointer-events:none;
+    }
+    #legend{
+      position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+      display:flex;gap:16px;align-items:center;flex-wrap:wrap;justify-content:center;
+      background:rgba(8,13,20,0.82);border:1px solid #192940;
+      border-radius:40px;padding:8px 18px;
+      font:500 11px/1 'IBM Plex Mono',monospace;
+      color:#7aaac8;letter-spacing:.04em;
+      backdrop-filter:blur(8px);
+    }
+    .row{display:flex;align-items:center;gap:5px}
+    .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+    .rect{width:12px;height:5px;border-radius:2px;flex-shrink:0;opacity:.7}
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="title">Heterogeneous Network (HetNet) — Live Topology</div>
+<div id="legend">
+  <span class="row"><span class="dot" style="background:#58c5ff"></span>MBS — Macro</span>
+  <span class="row"><span class="dot" style="background:#f7b84b"></span>PBS — Pico</span>
+  <span class="row"><span class="dot" style="background:#a78bfa"></span>FBS — Femto</span>
+  <span class="row"><span class="dot" style="background:#3df0a0"></span>UE</span>
+  <span class="row"><span class="rect" style="background:#3df0a0"></span>UE–BS link</span>
+  <span class="row"><span class="rect" style="background:#ff4f4f"></span>Co-channel interference</span>
+</div>
+
+<script>
+// ── canvas setup ──────────────────────────────────────────────────────────────
+const cv = document.getElementById('c');
+const cx = cv.getContext('2d');
+let W, H, DPR;
+
+function resize(){
+  DPR = devicePixelRatio || 1;
+  W = cv.width  = innerWidth  * DPR;
+  H = cv.height = innerHeight * DPR;
+  cv.style.width  = innerWidth  + 'px';
+  cv.style.height = innerHeight + 'px';
+  build();
+}
+window.addEventListener('resize', resize);
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+const rand  = (a,b)=>a+Math.random()*(b-a);
+const lerp  = (a,b,t)=>a+(b-a)*t;
+const dist2 = (a,b)=>Math.hypot(a.x-b.x, a.y-b.y);
+
+// ── config ────────────────────────────────────────────────────────────────────
+const CFG = {
+  nMBS: 2,
+  nPBS: 4,   // per MBS → 4 cardinal offsets
+  nFBS: 5,   // per MBS → scattered inside macro
+  nUE:  10,
+  nCh:  4,   // number of frequency channels
+  // radii as fraction of min(W,H)
+  rMBS: 0.36,
+  rPBS: 0.13,
+  rFBS: 0.07,
+};
+
+// ── channel colours ───────────────────────────────────────────────────────────
+const CH_COL = ['#3df0a0','#58c5ff','#f7b84b','#c084fc'];
+
+// ── state ─────────────────────────────────────────────────────────────────────
+let mbs=[], pbs=[], fbs=[], ues=[], packets=[];
+
+function build(){
+  packets = [];
+  const R  = Math.min(W,H);
+  const mR = CFG.rMBS * R;
+  const pR = CFG.rPBS * R;
+  const fR = CFG.rFBS * R;
+
+  // MBS: evenly spaced horizontally, centred vertically
+  mbs = Array.from({length:CFG.nMBS},(_,i)=>{
+    const x = W*(i+1)/(CFG.nMBS+1);
+    const y = H*0.5;
+    return {x, y, r:mR, drawR:16*DPR, type:'MBS', col:'#58c5ff', id:i};
+  });
+
+  // PBS: 4 cardinal offsets per MBS (N,E,S,W) at 250 world-units → scale to 0.14*R
+  const pOff = pR * 0.85;
+  const dirs = [[0,-1],[1,0],[0,1],[-1,0]];
+  pbs = [];
+  mbs.forEach((m,mi)=>{
+    dirs.forEach(([dx,dy],di)=>{
+      pbs.push({
+        x: m.x + dx*pOff, y: m.y + dy*pOff,
+        r: pR, drawR:13*DPR, type:'PBS', col:'#f7b84b',
+        mbsId: mi, id: pbs.length
+      });
+    });
+  });
+
+  // FBS: random within MBS radius
+  fbs = [];
+  mbs.forEach((m,mi)=>{
+    for(let i=0;i<CFG.nFBS;i++){
+      const theta = rand(-Math.PI,Math.PI);
+      const r     = rand(0.08,0.9)*mR;
+      fbs.push({
+        x: m.x+r*Math.cos(theta), y: m.y+r*Math.sin(theta),
+        r: fR, drawR:9*DPR, type:'FBS', col:'#a78bfa',
+        mbsId: mi, id: fbs.length
+      });
+    }
+  });
+
+  const allBS = [...mbs,...pbs,...fbs];
+
+  // UEs: spawn inside a random BS coverage area so they start connected
+  ues = Array.from({length:CFG.nUE},(_,i)=>{
+    const bs  = allBS[Math.floor(Math.random()*allBS.length)];
+    const theta = rand(-Math.PI, Math.PI);
+    const r     = rand(0, bs.r * 0.78);
+    const ox = bs.x + r*Math.cos(theta);
+    const oy = bs.y + r*Math.sin(theta);
+    const ch  = Math.floor(Math.random()*CFG.nCh);
+    return {
+      x:ox, y:oy, ox, oy,
+      phase: rand(0, Math.PI*2),
+      ch,
+      col: CH_COL[ch],
+      serverId: -1,
+      linkAlpha: 0,
+      id: i,
+    };
+  });
+}
+
+// ── association: nearest BS that covers the UE ───────────────────────────────
+function associate(ue){
+  const allBS = [...mbs,...pbs,...fbs];
+  let best=-1, bestD=Infinity;
+  allBS.forEach((bs,i)=>{
+    const d=dist2(ue,bs);
+    if(d<=bs.r && d<bestD){bestD=d;best=i;}
+  });
+  ue.serverId = best;
+}
+
+// ── interference: UE pairs sharing same channel both served ──────────────────
+function getInterference(){
+  const pairs=[];
+  for(let i=0;i<ues.length;i++){
+    for(let j=i+1;j<ues.length;j++){
+      if(ues[i].ch===ues[j].ch && ues[i].serverId>=0 && ues[j].serverId>=0){
+        const d=dist2(ues[i],ues[j]);
+        const maxD=Math.min(W,H)*0.32;
+        if(d<maxD) pairs.push({i,j,str:1-d/maxD});
+      }
+    }
+  }
+  return pairs;
+}
+
+// ── packet spawn ──────────────────────────────────────────────────────────────
+function spawn(x1,y1,x2,y2,col){
+  if(Math.random()>.006) return;
+  packets.push({x1,y1,x2,y2,col,t:0,spd:rand(.005,.011)});
+}
+
+function tickPackets(){
+  for(let i=packets.length-1;i>=0;i--){
+    const p=packets[i]; p.t+=p.spd;
+    if(p.t>1){packets.splice(i,1);continue;}
+    const px=lerp(p.x1,p.x2,p.t), py=lerp(p.y1,p.y2,p.t);
+    cx.save();
+    cx.globalAlpha=Math.sin(p.t*Math.PI)*.85;
+    cx.fillStyle=p.col; cx.shadowColor=p.col; cx.shadowBlur=7;
+    cx.beginPath(); cx.arc(px,py,2.5*DPR,0,Math.PI*2); cx.fill();
+    cx.restore();
+  }
+}
+
+// ── drawing helpers ───────────────────────────────────────────────────────────
+function gline(x1,y1,x2,y2,col,a,w){
+  cx.save();
+  cx.strokeStyle=col; cx.lineWidth=w;
+  cx.globalAlpha=a*.2; cx.shadowColor=col; cx.shadowBlur=10;
+  cx.beginPath(); cx.moveTo(x1,y1); cx.lineTo(x2,y2); cx.stroke();
+  cx.globalAlpha=a; cx.shadowBlur=0;
+  cx.beginPath(); cx.moveTo(x1,y1); cx.lineTo(x2,y2); cx.stroke();
+  cx.restore();
+}
+
+function dot(x,y,r,col,glowMul){
+  cx.save();
+  if(glowMul){
+    const g=cx.createRadialGradient(x,y,r*.3,x,y,r*glowMul);
+    g.addColorStop(0,col+'50'); g.addColorStop(1,col+'00');
+    cx.fillStyle=g; cx.beginPath(); cx.arc(x,y,r*glowMul,0,Math.PI*2); cx.fill();
+  }
+  cx.fillStyle=col; cx.shadowColor=col; cx.shadowBlur=14;
+  cx.beginPath(); cx.arc(x,y,r,0,Math.PI*2); cx.fill();
+  cx.restore();
+}
+
+function coverageRing(x,y,r,col,alpha){
+  cx.save();
+  const g=cx.createRadialGradient(x,y,r*.7,x,y,r);
+  g.addColorStop(0,col+'00');
+  g.addColorStop(0.7,col+Math.round(alpha*255*0.12).toString(16).padStart(2,'0'));
+  g.addColorStop(1,col+'00');
+  cx.fillStyle=g;
+  cx.beginPath(); cx.arc(x,y,r,0,Math.PI*2); cx.fill();
+  cx.strokeStyle=col;
+  cx.globalAlpha=alpha*.3;
+  cx.lineWidth=.8*DPR;
+  cx.setLineDash([4*DPR,6*DPR]);
+  cx.beginPath(); cx.arc(x,y,r,0,Math.PI*2); cx.stroke();
+  cx.restore();
+}
+
+function label(x,y,text,col,sz){
+  cx.save();
+  cx.font=`bold ${sz*DPR}px IBM Plex Mono,monospace`;
+  cx.fillStyle=col+'cc'; cx.textAlign='center'; cx.textBaseline='middle';
+  cx.fillText(text,x,y);
+  cx.restore();
+}
+
+function drawGrid(){
+  const s=Math.min(W,H)*.06;
+  cx.save(); cx.strokeStyle='rgba(22,48,78,0.28)'; cx.lineWidth=.7;
+  for(let x=0;x<W;x+=s){cx.beginPath();cx.moveTo(x,0);cx.lineTo(x,H);cx.stroke();}
+  for(let y=0;y<H;y+=s){cx.beginPath();cx.moveTo(0,y);cx.lineTo(W,y);cx.stroke();}
+  cx.restore();
+}
+
+// ── main loop ─────────────────────────────────────────────────────────────────
+function frame(t){
+  requestAnimationFrame(frame);
+
+  cx.fillStyle='#080d14'; cx.fillRect(0,0,W,H);
+  drawGrid();
+
+  const allBS=[...mbs,...pbs,...fbs];
+
+  // move UEs — keep them inside BS coverage
+  ues.forEach(ue=>{
+    const prevX=ue.x, prevY=ue.y;
+    const s=t*.00014+ue.phase;
+    ue.x=ue.ox+Math.sin(s*1.05)*W*.08+Math.cos(s*.68)*W*.04;
+    ue.y=ue.oy+Math.cos(s*.88)*H*.06+Math.sin(s*1.22)*H*.03;
+    associate(ue);
+    // revert if outside all BS coverage areas
+    if(ue.serverId<0){ ue.x=prevX; ue.y=prevY; associate(ue); }
+    ue.linkAlpha=ue.serverId>=0?Math.min(1,ue.linkAlpha+.03):Math.max(0,ue.linkAlpha-.025);
+  });
+
+  // ── MBS coverage halos ────────────────────────────────────────────────────
+  mbs.forEach((bs,i)=>{
+    const pulse=.5+.5*Math.sin(t*.0009+i*1.6);
+    coverageRing(bs.x,bs.y,bs.r,'#58c5ff',pulse*.7);
+  });
+
+  // ── PBS coverage halos ────────────────────────────────────────────────────
+  pbs.forEach(bs=>{
+    const pulse=.5+.5*Math.sin(t*.0013+bs.id*.9);
+    coverageRing(bs.x,bs.y,bs.r,'#f7b84b',pulse*.55);
+  });
+
+  // ── FBS coverage halos ────────────────────────────────────────────────────
+  fbs.forEach(bs=>{
+    const pulse=.5+.5*Math.sin(t*.0018+bs.id*1.2);
+    coverageRing(bs.x,bs.y,bs.r,'#a78bfa',pulse*.45);
+  });
+
+  // ── interference edges ─────────────────────────────────────────────────────
+  getInterference().forEach(({i,j,str})=>{
+    gline(ues[i].x,ues[i].y,ues[j].x,ues[j].y,'#ff4f4f',str*.65,1.4*DPR);
+  });
+
+  // ── UE–BS association links ────────────────────────────────────────────────
+  ues.forEach(ue=>{
+    if(ue.serverId<0||ue.linkAlpha<.01) return;
+    const bs=allBS[ue.serverId];
+    gline(ue.x,ue.y,bs.x,bs.y,ue.col,ue.linkAlpha*.72,1.3*DPR);
+    spawn(ue.x,ue.y,bs.x,bs.y,ue.col);
+    spawn(bs.x,bs.y,ue.x,ue.y,ue.col);
+  });
+
+  tickPackets();
+
+  // ── FBS nodes ─────────────────────────────────────────────────────────────
+  fbs.forEach(bs=>{
+    dot(bs.x,bs.y,bs.drawR,bs.col,4);
+    label(bs.x,bs.y+bs.drawR*1.8,'F','#a78bfa',7);
+  });
+
+  // ── PBS nodes ─────────────────────────────────────────────────────────────
+  pbs.forEach(bs=>{
+    dot(bs.x,bs.y,bs.drawR,bs.col,5);
+    label(bs.x,bs.y+bs.drawR*2,'P','#f7b84b',8);
+  });
+
+  // ── MBS nodes ─────────────────────────────────────────────────────────────
+  mbs.forEach((bs,i)=>{
+    const pulse=.5+.5*Math.sin(t*.0011+i*1.4);
+    dot(bs.x,bs.y,bs.drawR,bs.col,6);
+    // outer ring pulse
+    cx.save(); cx.globalAlpha=pulse*.28;
+    cx.strokeStyle=bs.col; cx.lineWidth=1.5*DPR;
+    cx.beginPath(); cx.arc(bs.x,bs.y,bs.drawR*(2.4+pulse*1.8),0,Math.PI*2); cx.stroke();
+    cx.restore();
+    label(bs.x,bs.y,'M',bs.col+'cc',9);
+  });
+
+  // ── UE nodes ──────────────────────────────────────────────────────────────
+  ues.forEach(ue=>{
+    const r=4.5*DPR;
+    dot(ue.x,ue.y,r,ue.col,5);
+    // channel colour ring
+    const pulse=.4+.6*Math.abs(Math.sin(t*.002+ue.phase));
+    cx.save(); cx.globalAlpha=pulse*.38;
+    cx.strokeStyle=ue.col; cx.lineWidth=1*DPR;
+    cx.beginPath(); cx.arc(ue.x,ue.y,r*(2.6+pulse*1.6),0,Math.PI*2); cx.stroke();
+    cx.restore();
+    // channel indicator
+    label(ue.x,ue.y-r*3.4,'ch'+ue.ch,ue.col,7);
+  });
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

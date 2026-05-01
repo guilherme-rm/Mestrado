@@ -1,0 +1,119 @@
+{
+  "_description": "Hardcoded architecture and physics constants from the codebase. Not read at runtime — documentation only.",
+
+  "dnn_architecture": {
+    "_note": "Defined in rl/networks.py — DNN class",
+    "type": "Feedforward DQN",
+    "input_dim": "nagents (flat global state) or GNN_OUTPUT_DIM (if GNN enabled)",
+    "hidden_layers": [128, 64, 64],
+    "output_dim": "BS_Number * nChannel",
+    "activation": "ReLU (all hidden layers)",
+    "output_activation": "none (raw Q-values)"
+  },
+
+  "algorithm": {
+    "_note": "Defined in rl/agent.py — DQNOptimizer.optimize()",
+    "algorithm": "Double DQN (DDQN)",
+    "loss_function": "Huber (smooth_l1_loss)",
+    "optimizer": "Adam",
+    "target_network_update": "soft update (tau per step)",
+    "gradient_clipping": {
+      "enabled": true,
+      "max_norm": 1.0,
+      "source": "constants.py — GRAD_CLIP_VALUE"
+    },
+    "mixed_precision": "torch.cuda.amp.autocast (enabled by use_amp in opt config)"
+  },
+
+  "replay_buffer": {
+    "_note": "Defined in rl/memory.py, selected in constants.py",
+    "type": "TensorReplayMemory (on-device) or ReplayMemory (CPU)",
+    "default": "TensorReplayMemory",
+    "source": "constants.py — USE_TENSOR_REPLAY_BUFFER = True",
+    "capacity_per_agent": "capacity (from opt config)"
+  },
+
+  "action_space": {
+    "_note": "Derived at runtime from scenario",
+    "size": "BS_Number * nChannel",
+    "encoding": "flat index: action = BS_index * nChannel + channel_index"
+  },
+
+  "state_space": {
+    "_note": "Global flat observation",
+    "size": "nagents",
+    "content": "current channel assignment for each agent (integer channel index)"
+  },
+
+  "radio_propagation": {
+    "_note": "Defined in telecom/base_station.py and rl/agent.py",
+    "tx_power_dbm": {
+      "MBS": 40,
+      "PBS": 30,
+      "FBS": 20
+    },
+    "path_loss_model": {
+      "MBS_PBS": "L = 34 + 40 * log10(d_meters)  [dB]",
+      "FBS": "L = 37 + 30 * log10(d_meters)  [dB]",
+      "min_distance_clamp": "1.0 m"
+    },
+    "sinr_to_capacity": "C = BW * log2(1 + SINR)  [Shannon bound]",
+    "noise_power": "N0_dBm_per_Hz + 10*log10(BW)",
+    "N0_units": "dBm/Hz (from sce config, typically -174)"
+  },
+
+  "reward_function": {
+    "_note": "Defined in rl/agent.py — RewardCalculator.compute()",
+    "formula": "R = profit * (capacity_Mbps / reference) - power_cost * Tx_power_dBm - action_cost * [channel_changed] + negative_cost * [QoS_failed]",
+    "qos_criterion": "SINR > QoS_thr (dB) → satisfied",
+    "parameters_from_sce": ["profit", "power_cost", "action_cost", "negative_cost", "QoS_thr", "N0", "BW"]
+  },
+
+  "target_network_update": {
+    "_note": "Soft update applied every nupdate steps (from opt config)",
+    "formula": "theta_target = tau * theta_policy + (1 - tau) * theta_target",
+    "tau_source": "opt config — tau field"
+  },
+
+  "gnn_extension": {
+    "_note": "Disabled by default. Defined in constants.py and rl/gnn/",
+    "enabled": false,
+    "hidden_dim": 64,
+    "output_dim": 64,
+    "num_layers": 2,
+    "use_attention": false,
+    "dropout": 0.1,
+    "observation_mode": "replace",
+    "include_interference_edges": true,
+    "include_potential_links": true,
+    "heterogeneous": false,
+    "transformer_variant_enabled": false
+  },
+
+  "shared_networks": {
+    "_note": "constants.py — SHARED_AGENT_NETWORKS",
+    "enabled": false,
+    "description": "If true, all agents share one policy/target network (faster but no per-agent specialization)"
+  },
+
+  "epsilon_policies": {
+    "linear_increasing": {
+      "description": "Epsilon rises from eps_start toward eps_max linearly, then decays. Original UARA-DRL behavior.",
+      "parameters": ["eps_start", "eps_max", "eps_increment", "eps_decay_steps", "eps_min", "eps_end"]
+    },
+    "exponential_decay": {
+      "description": "Standard RL decay: eps *= EPS_MAX_DECAY each episode until EPS_MAX_MIN.",
+      "parameters_from_constants": {
+        "EPS_MAX_DECAY": 0.995,
+        "EPS_MAX_MIN": 0.1
+      }
+    }
+  },
+
+  "action_strategies": {
+    "epsilon_greedy": "Standard e-greedy: random with prob eps, else argmax Q.",
+    "greedy": "Always argmax Q (no exploration).",
+    "langevin": "Langevin-noise action selection (stochastic perturbation of Q-values).",
+    "boltzmann": "Softmax over Q-values (temperature-based exploration)."
+  }
+}

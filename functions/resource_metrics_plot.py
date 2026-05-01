@@ -44,6 +44,12 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+from functions.gpu_manager import (
+    get_gpu_memory_used_mb as _nvml_gpu_memory_used_mb,
+    get_total_vram_mb as _gpu_total_vram_mb,
+    get_gpu_utilization_percent as _nvml_gpu_utilization_pct,
+)
+
 # Optional CPU/memory monitoring
 try:
     import psutil
@@ -73,6 +79,9 @@ def get_gpu_memory_used_mb() -> Optional[float]:
     which is more representative of actual GPU memory usage than memory_allocated().
     """
     if TORCH_AVAILABLE and torch.cuda.is_available():
+        nvml_used = _nvml_gpu_memory_used_mb(0)
+        if nvml_used is not None:
+            return nvml_used
         # memory_reserved shows all memory held by the caching allocator
         # memory_allocated only shows memory for active tensors (often 0 between operations)
         reserved = torch.cuda.memory_reserved() / (1024 * 1024)
@@ -86,23 +95,13 @@ def get_gpu_memory_used_mb() -> Optional[float]:
 def get_gpu_memory_total_mb() -> Optional[float]:
     """Get total GPU memory in MB (CUDA only)."""
     if TORCH_AVAILABLE and torch.cuda.is_available():
-        return torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)
+        return _gpu_total_vram_mb(0)
     return None
 
 
 def get_gpu_utilization() -> Optional[float]:
-    """Get GPU utilization percentage using nvidia-smi (if available)."""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'],
-            capture_output=True, text=True, timeout=1
-        )
-        if result.returncode == 0:
-            return float(result.stdout.strip().split('\n')[0])
-    except Exception:
-        pass
-    return None
+    """Get GPU utilization percentage via NVML when available."""
+    return _nvml_gpu_utilization_pct(0)
 
 
 class ResourceMetricsPlotter:

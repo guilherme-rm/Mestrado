@@ -15,10 +15,33 @@ pip install -r requirements.txt
 python main.py -c1 Config/config_test_sce.json -c2 Config/config_test_opt.json -n 1
 ```
 
+### 3) Use the lightweight launcher interface (recommended)
+
+```
+python launch_interface.py
+```
+
+This opens a small UI (Tkinter) to choose scenario/optimization config files and
+runtime options (environment type, plotting, GNN, mobility, etc.).
+If Tkinter is unavailable, it falls back to a terminal prompt interface.
+
+Selected runtime options are written into:
+
+```
+Config/config_runtime_generated_opt.json
+```
+
+Then training is launched automatically using that generated config.
+
 Arguments:
 - `-c1/--config_path1`: Scenario (sce) JSON file.
 - `-c2/--config_path2`: Options (opt) JSON file.
 - `-n/--ntrials`: Number of independent trials to run (default 1).
+
+Optional:
+- `--ui`: open the launcher interface from `main.py`.
+- `--seed`: random seed override.
+- `--run-name`: custom run directory prefix.
 
 Outputs are written under `Result/run/` (overwritten each run). You will find:
 - `opt.json`, `sce.json`: snapshots of the provided configs
