@@ -5,3 +5,4 @@ psutil
 numpy
 pandas
 pyyaml
+nvidia-ml-py

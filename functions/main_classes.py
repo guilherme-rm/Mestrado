@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 
 import torch
+from functions.gpu_manager import GPUManager
 
-from telecom.scenario import Scenario
+from telecom.environment_factory import create_scenario, resolve_environment_type
 from telecom.mobility import MobilityManager, MOBILITY_ENABLED
 from telecom.interference import compute_interference_graph
 from rl.training import (
@@ -440,7 +441,7 @@ class EpisodeRunner:
     def __init__(
         self,
         agents: List,
-        scenario: Scenario,
+        scenario: Any,
         config: TrainingConfig,
         device: torch.device,
         action_tail_len: int = 10,
@@ -604,7 +605,7 @@ class Trainer:
     def __init__(
         self,
         agents: List,
-        scenario: Scenario,
+        scenario: Any,
         config: TrainingConfig,
         opt: Any,  # Original opt for store_and_learn compatibility
         sce: Any,  # Scenario config for summary generation
@@ -622,6 +623,7 @@ class Trainer:
         self.device = device
         self.mobility_manager = mobility_manager
         self.gnn_manager = gnn_manager
+        self.environment_type = resolve_environment_type(opt)
         
         # Components
         self.epsilon_scheduler = EpsilonScheduler.from_opt(opt)
@@ -678,6 +680,7 @@ class Trainer:
             mobility_manager=self.mobility_manager,
             show_hotspots=MOBILITY_ENABLED,
             show_interference=True,
+            environment_type=self.environment_type,
             deferred=DEFERRED_PLOTTING,
         )
     
@@ -974,12 +977,17 @@ class Trainer:
                 actions=actions,
                 scenario=self.scenario,
             )
+
+        cellfree_diagnostics = None
+        if hasattr(self.scenario, "get_visual_diagnostics"):
+            cellfree_diagnostics = self.scenario.get_visual_diagnostics()
         
         self.telecom_plotter.update(
             step=episode,  # Use episode as the counter since we update per episode
             episode=episode,
             actions=actions,
             interference_edges=interference_edges,
+            cellfree_diagnostics=cellfree_diagnostics,
         )
     
     def _finalize(self):
@@ -1032,8 +1040,11 @@ class ExperimentManager:
         self.opt = opt
         self.sce = sce
         self.run_name = run_name
+        # Defer full GPU setup to setup(); provide a basic default for
+        # code that reads self.device before setup() is called.
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.multi_gpu_device_ids: List[int] = []
+        self._gpu_manager: Optional[GPUManager] = None
         
         self.scenario = None
         self.run_dir = None
@@ -1043,52 +1054,27 @@ class ExperimentManager:
         self.gnn_manager = None
 
     def _configure_device_plan(self):
-        """Auto-select single vs multi-GPU based on availability and memory."""
-        # Defaults keep backward compatibility when keys are absent in config files.
-        auto_multi_gpu = bool(getattr(self.opt, "multi_gpu_auto", True))
-        min_mem_gb = float(getattr(self.opt, "multi_gpu_min_memory_gb", 8.0) or 8.0)
+        """Auto-select single vs multi-GPU via GPUManager."""
+        self._gpu_manager = GPUManager.from_opt(self.opt)
+        self.device = self._gpu_manager.device
+        self.multi_gpu_device_ids = self._gpu_manager.multi_gpu_device_ids
+        self._gpu_manager.apply_to_opt(self.opt)
 
-        setattr(self.opt, "multi_gpu_enabled", False)
-        setattr(self.opt, "multi_gpu_device_ids", [])
-
-        if not torch.cuda.is_available():
-            self.device = torch.device("cpu")
-            print("Device plan: CPU (CUDA not available)")
+    def _auto_scale_batch_size(self, gnn_input_dim: Optional[int] = None):
+        """Delegate batch-size auto-scaling to GPUManager."""
+        if self._gpu_manager is None:
             return
-
-        gpu_count = torch.cuda.device_count()
-        if not auto_multi_gpu or gpu_count < 2:
-            self.device = torch.device("cuda:0")
-            print(f"Device plan: single GPU ({self.device})")
-            return
-
-        eligible_gpu_ids: List[int] = []
-        for gpu_id in range(gpu_count):
-            props = torch.cuda.get_device_properties(gpu_id)
-            total_mem_gb = props.total_memory / (1024 ** 3)
-            if total_mem_gb >= min_mem_gb:
-                eligible_gpu_ids.append(gpu_id)
-
-        if len(eligible_gpu_ids) >= 2:
-            self.multi_gpu_device_ids = eligible_gpu_ids
-            self.device = torch.device(f"cuda:{eligible_gpu_ids[0]}")
-            setattr(self.opt, "multi_gpu_enabled", True)
-            setattr(self.opt, "multi_gpu_device_ids", eligible_gpu_ids)
-            print(
-                "Device plan: multi-GPU enabled on "
-                f"{eligible_gpu_ids} (min memory per GPU: {min_mem_gb:.1f} GB)"
-            )
-        else:
-            self.device = torch.device("cuda:0")
-            print(
-                "Device plan: single GPU (insufficient eligible GPUs for multi-GPU). "
-                f"Need >=2 GPUs with at least {min_mem_gb:.1f} GB each."
-            )
+        state_dim = gnn_input_dim if gnn_input_dim else int(self.opt.nagents)
+        new_bs = self._gpu_manager.auto_scale_batch_size(
+            current_batch_size=int(self.opt.batch_size),
+            state_dim=state_dim,
+        )
+        self.opt["batch_size"] = new_bs
     
     def setup(self):
         """Initialize all components for a trial."""
         self._configure_device_plan()
-        self.scenario = Scenario(self.sce)
+        self.scenario = create_scenario(self.sce, self.opt)
         if self.run_name:
             self.run_dir = RunDirectoryManager(prefix=self.run_name, overwrite=False)
         else:
@@ -1129,6 +1115,10 @@ class ExperimentManager:
         
         if self.gnn_manager.enabled:
             print(f"GNN enabled: input_dim={gnn_input_dim}")
+
+        print(f"Environment type: {resolve_environment_type(self.opt)}")
+
+        self._auto_scale_batch_size(gnn_input_dim)
     
     def run(self) -> Dict[str, List[float]]:
         """Execute training and return metrics."""

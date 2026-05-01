@@ -6,7 +6,7 @@ Import these values where needed instead of hardcoding them.
 
 # ============== PERFORMANCE SETTINGS ==============
 # Set to True for faster training (disables expensive features)
-FAST_MODE = True
+FAST_MODE = False
 
 # Step logging throttle - higher = fewer CSV writes, better performance
 # For large configs, use 50-100
@@ -80,3 +80,9 @@ GNN_OBSERVATION_MODE = "replace"
 GNN_INCLUDE_INTERFERENCE_EDGES = True
 GNN_INCLUDE_POTENTIAL_LINKS = True
 GNN_HETEROGENEOUS = False  # Use separate params for UE/BS nodes
+
+
+# ============== ENVIRONMENT SELECTION ==============
+# Select telecom model used by the training pipeline.
+# Supported values: "hetnet" (existing behavior), "cell_free" (new model)
+ENVIRONMENT_TYPE = "hetnet"

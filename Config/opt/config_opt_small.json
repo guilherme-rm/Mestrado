@@ -1,0 +1,61 @@
+{
+  "_name": "Small optimization config - 30 agents, 500 episodes (config_2 baseline)",
+  "nagents": 30,
+  "capacity": 10000,
+  "learning_rate": 0.001,
+  "momentum": 0.005,
+  "tau": 0.005,
+  "batch_size": 64,
+  "gamma": 0.9,
+
+  "min_memory_for_learning": 8,
+  "action_strategy": "langevin",
+
+  "epsilon_policy": "linear_increasing",
+  "eps_min": 0.0,
+  "eps_max": 0.9,
+  "eps_increment": 0.003,
+  "eps_start": 1.0,
+  "eps_end": 0.05,
+  "eps_decay_steps": 50000,
+
+  "nepisodes": 500,
+  "nsteps": 50,
+  "nupdate": 50,
+
+  "early_termination": true,
+  "learn_every": 1,
+  "use_amp": true,
+  "metrics_interval": 10,
+  "diag_interval": 10,
+  "parallel_agent_optimization": true,
+  "parallel_opt_max_streams": 4,
+  "multi_gpu_auto": true,
+  "multi_gpu_min_memory_gb": 8.0,
+  "batch_size_auto": false,
+  "batch_size_vram_fraction": 0.6,
+  "batch_size_min": 64,
+  "batch_size_max": 4096,
+  "batch_size_grad_overhead": 5.0,
+  "cuda": 0,
+
+  "enable_plot": true,
+  "plot_interval": 50,
+  "plot_smooth_window": 100,
+  "plot_x_axis": "episodes",
+  "step_log_throttle": 5,
+  "checkpoint_interval": 100,
+
+  "_doc": {
+    "nagents": "Number of agents (UEs). Also sets DNN input size in RL.",
+    "capacity": "Replay buffer capacity per agent (number of transitions).",
+    "learning_rate": "Optimizer learning rate.",
+    "tau": "Soft target network update rate.",
+    "min_memory_for_learning": "Minimum transitions before learning starts.",
+    "action_strategy": "Action selection: epsilon_greedy, greedy, langevin, or boltzmann.",
+    "epsilon_policy": "'linear_increasing' (original) or 'exponential_decay' (standard RL).",
+    "nepisodes": "Number of training episodes.",
+    "nsteps": "Max steps per episode.",
+    "checkpoint_interval": "Save checkpoints every N episodes (0 disables)."
+  }
+}

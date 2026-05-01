@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Sequence, List, Optional, Dict
 
+import numpy as np
 import torch
 
 from torch import optim
@@ -21,13 +22,11 @@ from constants import (
     GNN_OBSERVATION_MODE,
     GNN_INCLUDE_INTERFERENCE_EDGES,
     GNN_HETEROGENEOUS,
-    GNN_TRANSFORMER_ENABLED,
     SHARED_AGENT_NETWORKS,
-    USE_TENSOR_REPLAY_BUFFER,
 )
 from .agent import Agent, TrainMetrics, DQNOptimizer
 from .networks import DNN
-from .memory import ReplayMemory, TensorReplayMemory
+from .memory import ReplayMemory
 
 
 @dataclass
@@ -72,12 +71,13 @@ def select_actions(
         forward_seconds = time.perf_counter() - t0
         
         t0 = time.perf_counter()
-        if q_values.dim() == 1:
-            q_batch = q_values.unsqueeze(0).expand(len(agents), -1)
-        else:
-            q_batch = q_values.expand(len(agents), -1)
-        actions = agents[0]._action_selector.select_batch(q_batch, eps)
+        raw = []
+        for ag in agents:
+            action = ag._action_selector.select(q_values, eps)
+            raw.append(torch.tensor(action, device=state.device))
         policy_seconds = time.perf_counter() - t0
+        stacked = torch.stack(raw)
+        actions = stacked.view(len(agents))
         if return_timing:
             return actions, {
                 "select_actions_forward_seconds": forward_seconds,
@@ -98,8 +98,13 @@ def select_actions(
         forward_seconds = time.perf_counter() - t0
         
         t0 = time.perf_counter()
-        actions = agents[0]._action_selector.select_batch(all_q_values, eps)
+        raw = []
+        for i, ag in enumerate(agents):
+            action = ag._action_selector.select(all_q_values[i], eps)
+            raw.append(torch.tensor(action, device=state.device))
         policy_seconds = time.perf_counter() - t0
+        stacked = torch.stack(raw)
+        actions = stacked.view(len(agents))
         if return_timing:
             return actions, {
                 "select_actions_forward_seconds": forward_seconds,
@@ -115,8 +120,7 @@ def select_actions(
         for i, ag in enumerate(agents):
             # Use GNN observation if available, otherwise flat state
             obs = gnn_observations[i] if gnn_observations and i in gnn_observations else state
-            obs_device = obs.to(ag.device) if isinstance(obs, torch.Tensor) else obs
-            raw.append(ag.Select_Action(obs_device, scenario, eps).to(state.device))
+            raw.append(ag.Select_Action(obs, scenario, eps))
         policy_seconds = time.perf_counter() - t0
         stacked = torch.stack(raw)
         actions = stacked.view(len(agents))
@@ -133,6 +137,11 @@ def compute_rewards_and_next_state(
     agents: Sequence[Agent], actions: torch.Tensor, state: torch.Tensor, scenario
 ):
     nagents = len(agents)
+    if hasattr(scenario, "set_current_ue_positions"):
+        scenario.set_current_ue_positions([
+            ag.location.detach().cpu().numpy() if isinstance(ag.location, torch.Tensor) else ag.location
+            for ag in agents
+        ])
     rewards = torch.zeros(nagents, device=state.device)
     qos = torch.zeros(nagents, device=state.device)
     next_state = torch.zeros(nagents, device=state.device)
@@ -140,8 +149,8 @@ def compute_rewards_and_next_state(
     for i, ag in enumerate(agents):
         qos_i, reward_i, cap_i = ag.Get_Reward(actions, actions[i], state, scenario)
         qos[i] = qos_i
-        rewards[i] = reward_i.to(state.device)
-        capacity[i] = cap_i.to(state.device)
+        rewards[i] = reward_i
+        capacity[i] = cap_i
         # State representation is the QoS satisfaction of the previous step
         next_state[i] = qos_i
     return rewards, qos, next_state, capacity
@@ -187,10 +196,6 @@ def store_and_learn(
     
     # Check if using shared networks (all agents share same network)
     uses_shared = agents[0].uses_shared_networks if agents else False
-    learn_every = max(1, int(getattr(opt, "learn_every", 1) or 1))
-    do_optimize = (step_idx % learn_every) == 0
-    parallel_opt = bool(getattr(opt, "parallel_agent_optimization", False))
-    max_streams = max(1, int(getattr(opt, "parallel_opt_max_streams", 4) or 1))
     
     all_metrics: List[TrainMetrics] = []
     store_transition_seconds = 0.0
@@ -211,72 +216,36 @@ def store_and_learn(
             # Flat mode: use shared state
             agent_state = state
             agent_next_state = next_state
-
-        # Keep per-agent tensors on the same device as that agent's model.
-        if isinstance(agent_state, torch.Tensor):
-            agent_state = agent_state.to(ag.device)
-        if isinstance(agent_next_state, torch.Tensor):
-            agent_next_state = agent_next_state.to(ag.device)
-        action_i = actions[i].to(ag.device) if isinstance(actions, torch.Tensor) else actions[i]
-        reward_i = rewards[i].to(ag.device) if isinstance(rewards, torch.Tensor) else rewards[i]
         
         t0 = time.perf_counter()
-        ag.Save_Transition(agent_state, action_i, agent_next_state, reward_i, scenario)
+        ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario)
         store_transition_seconds += time.perf_counter() - t0
 
-    if do_optimize:
         if uses_shared:
             # With shared networks: only optimize once (on first agent)
+            # All agents share the same network, so one update is enough
+            if i == 0:
+                t0 = time.perf_counter()
+                metrics = ag.Optimize_Model()
+                optimize_seconds += time.perf_counter() - t0
+                if metrics.did_learn:
+                    all_metrics.append(metrics)
+                # Hard target update (only once since networks are shared)
+                if step_idx % nupdate == 0:
+                    t0 = time.perf_counter()
+                    ag.Target_Update()
+                    target_update_seconds += time.perf_counter() - t0
+        else:
+            # Independent networks: optimize each agent separately
             t0 = time.perf_counter()
-            metrics = agents[0].Optimize_Model()
+            metrics = ag.Optimize_Model()
             optimize_seconds += time.perf_counter() - t0
             if metrics.did_learn:
                 all_metrics.append(metrics)
-
-            # Hard target update (only once since networks are shared)
-            if step_idx % nupdate == 0:
-                t0 = time.perf_counter()
-                agents[0].Target_Update()
-                target_update_seconds += time.perf_counter() - t0
-        else:
-            use_parallel_streams = (
-                parallel_opt
-                and state.device.type == "cuda"
-                and len(agents) > 1
-                and len({ag.device.index for ag in agents if ag.device.type == "cuda"}) == 1
-            )
-
-            if use_parallel_streams:
-                n_streams = min(max_streams, len(agents))
-                streams = [torch.cuda.Stream(device=state.device) for _ in range(n_streams)]
-                metrics_buffer: List[Optional[TrainMetrics]] = [None] * len(agents)
-
-                t0 = time.perf_counter()
-                for idx, ag in enumerate(agents):
-                    stream = streams[idx % n_streams]
-                    with torch.cuda.stream(stream):
-                        metrics_buffer[idx] = ag.Optimize_Model()
-                for stream in streams:
-                    stream.synchronize()
-                optimize_seconds += time.perf_counter() - t0
-
-                for metrics in metrics_buffer:
-                    if metrics is not None and metrics.did_learn:
-                        all_metrics.append(metrics)
-            else:
-                # Independent networks: optimize each agent separately
-                for ag in agents:
-                    t0 = time.perf_counter()
-                    metrics = ag.Optimize_Model()
-                    optimize_seconds += time.perf_counter() - t0
-                    if metrics.did_learn:
-                        all_metrics.append(metrics)
-
             # Hard target update every nupdate steps (like original UARA-DRL)
             if step_idx % nupdate == 0:
                 t0 = time.perf_counter()
-                for ag in agents:
-                    ag.Target_Update()
+                ag.Target_Update()
                 target_update_seconds += time.perf_counter() - t0
 
     timing = {
@@ -325,7 +294,7 @@ def create_agents(
     device,
     mobility_manager=None,
     gnn_input_dim: int = None,
-    multi_gpu_device_ids: Optional[List[int]] = None,
+    multi_gpu_device_ids=None,
 ) -> List[Agent]:
     """Create agents (UEs) for the simulation.
     
@@ -342,74 +311,44 @@ def create_agents(
     """
     shared_networks = None
     shared_memory = None
-    multi_gpu_enabled = bool(getattr(opt, "multi_gpu_enabled", False))
-    multi_gpu_device_ids = multi_gpu_device_ids or []
-    primary_device = device
-
-    if multi_gpu_enabled and multi_gpu_device_ids:
-        primary_device = torch.device(f"cuda:{multi_gpu_device_ids[0]}")
     
     if SHARED_AGENT_NETWORKS:
         # Create single shared network for all agents
-        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(primary_device)
-        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(primary_device)
-
-        if multi_gpu_enabled and len(multi_gpu_device_ids) >= 2:
-            model_policy = torch.nn.DataParallel(model_policy, device_ids=multi_gpu_device_ids)
-            model_target = torch.nn.DataParallel(model_target, device_ids=multi_gpu_device_ids)
-
+        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
+        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
         model_target.load_state_dict(model_policy.state_dict())
         model_target.eval()
         
         momentum = opt.momentum if opt.momentum is not None else 0.0
-        learning_rate = (
-            getattr(opt, "learning_rate", None)
-            or getattr(opt, "learningrate", None)
-            or 5e-4
-        )
         optimizer = optim.RMSprop(
             params=model_policy.parameters(),
-            lr=learning_rate,
+            lr=opt.learning_rate,
             momentum=momentum,
         )
         dqn_optimizer = DQNOptimizer(
-            model_policy, model_target, optimizer, opt, primary_device
+            model_policy, model_target, optimizer, opt, device
         )
         shared_networks = (model_policy, model_target, optimizer, dqn_optimizer)
         
         # Create single shared replay buffer - larger capacity since all agents contribute
         # Use nagents * original_capacity to maintain similar per-agent experience storage
         shared_capacity = opt.capacity * opt.nagents
-        if USE_TENSOR_REPLAY_BUFFER:
-            shared_memory = TensorReplayMemory(shared_capacity)
-        else:
-            shared_memory = ReplayMemory(shared_capacity)
+        shared_memory = ReplayMemory(shared_capacity)
     
-    agents: List[Agent] = []
-    for i in range(opt.nagents):
-        if shared_networks is not None:
-            agent_device = primary_device
-        elif multi_gpu_enabled and len(multi_gpu_device_ids) >= 2:
-            gpu_id = multi_gpu_device_ids[i % len(multi_gpu_device_ids)]
-            agent_device = torch.device(f"cuda:{gpu_id}")
-        else:
-            agent_device = device
-
-        agents.append(
-            Agent(
-                opt,
-                sce,
-                scenario,
-                index=i,
-                device=agent_device,
-                mobility_manager=mobility_manager,
-                input_dim=gnn_input_dim,
-                shared_networks=shared_networks,
-                shared_memory=shared_memory,
-            )
+    return [
+        Agent(
+            opt,
+            sce,
+            scenario,
+            index=i,
+            device=device,
+            mobility_manager=mobility_manager,
+            input_dim=gnn_input_dim,
+            shared_networks=shared_networks,
+            shared_memory=shared_memory,
         )
-
-    return agents
+        for i in range(opt.nagents)
+    ]
 
 
 class GNNObservationManager:
@@ -464,7 +403,6 @@ class GNNObservationManager:
             gnn_num_layers=GNN_NUM_LAYERS,
             use_attention=GNN_USE_ATTENTION,
             include_interference_edges=GNN_INCLUDE_INTERFERENCE_EDGES,
-            conv_type="transformer" if GNN_TRANSFORMER_ENABLED else "gcn",
             heterogeneous=GNN_HETEROGENEOUS,
         )
     
@@ -501,8 +439,8 @@ class GNNObservationManager:
         
         # Extract UE positions from agents
         ue_positions = [
-            agent.location if isinstance(agent.location, torch.Tensor)
-            else torch.as_tensor(agent.location, device=self.device, dtype=torch.float32)
+            agent.location.cpu().numpy() if isinstance(agent.location, torch.Tensor)
+            else np.array(agent.location)
             for agent in agents
         ]
         

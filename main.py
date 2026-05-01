@@ -4,18 +4,22 @@ import argparse
 import copy
 import json
 import random
+import subprocess
+import sys
 
 import numpy as np
 import torch
 
 from dotdic import DotDic
-from functions.main_classes import ExperimentManager
-import constants
+from functions.runtime_settings import apply_runtime_settings
+from telecom.environment_factory import resolve_environment_type
 from telecom import mobility
 
 
 def run_multiple_trials(opt, sce, ntrials: int, run_name: str = None):
     """Run multiple independent trials."""
+    from functions.main_classes import ExperimentManager
+
     all_metrics = []
     
     for i in range(ntrials):
@@ -46,7 +50,7 @@ def run_multiple_trials(opt, sce, ntrials: int, run_name: str = None):
 def main():
     """Parse arguments and run training."""
     parser = argparse.ArgumentParser(
-        description="Train RL agents for wireless resource allocation (refactored version)"
+        description="Train RL agents for wireless resource allocation (config-driven)"
     )
     parser.add_argument(
         "-c1", "--config_sce",
@@ -67,57 +71,6 @@ def main():
         help="Number of independent trials to run (default: 1)",
     )
     parser.add_argument(
-        "--deferred-plots",
-        action="store_true",
-        help="Render plots only at the end of training instead of during (reduces I/O overhead)",
-    )
-    parser.add_argument(
-        "--no-resource-plots",
-        action="store_true",
-        help="Disable CPU/GPU resource usage plotting",
-    )
-    parser.add_argument(
-        "--gnn-enabled",
-        action="store_true",
-        default=None,
-        help="Enable GNN-based observation encoding",
-    )
-    parser.add_argument(
-        "--no-gnn",
-        action="store_true",
-        help="Disable GNN-based observation encoding (use flat observations)",
-    )
-    parser.add_argument(
-        "--gnn-mode",
-        type=str,
-        choices=["replace", "augment"],
-        default=None,
-        help="GNN observation mode: 'replace' (GNN only) or 'augment' (GNN + flat obs)",
-    )
-    parser.add_argument(
-        "--gnn-transformer",
-        action="store_true",
-        default=None,
-        help="Enable TransformerConv backend for GNN encoder",
-    )
-    parser.add_argument(
-        "--no-gnn-transformer",
-        action="store_true",
-        default=None,
-        help="Disable TransformerConv backend for GNN encoder",
-    )
-    parser.add_argument(
-        "--mobility",
-        action="store_true",
-        default=None,
-        help="Enable UE mobility simulation",
-    )
-    parser.add_argument(
-        "--no-mobility",
-        action="store_true",
-        help="Disable UE mobility simulation",
-    )
-    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -130,71 +83,15 @@ def main():
         help="Custom name for the run directory (instead of timestamp)",
     )
     parser.add_argument(
-        "--slow-mode",
+        "--ui",
         action="store_true",
-        help="Disable fast mode: enables plots, full logging, all features",
-    )
-    parser.add_argument(
-        "--no-plots",
-        action="store_true", 
-        help="Disable all plotting (telecom, network metrics, resource metrics)",
+        help="Open lightweight launcher interface instead of running directly",
     )
     args = parser.parse_args()
-    
-    # Slow mode: enable expensive features for full diagnostics
-    if args.slow_mode:
-        constants.FAST_MODE = False
-        constants.NETWORK_PLOT_ENABLED = True
-        constants.TELECOM_PLOT_ENABLED = True
-        constants.RESOURCE_PLOT_ENABLED = True
-        constants.DEFAULT_STEP_LOG_THROTTLE = 10
-        constants.DEFERRED_PLOTTING = False
-        print("Slow mode enabled: full plots and logging")
-    
-    # Disable all plots
-    if args.no_plots:
-        constants.NETWORK_PLOT_ENABLED = False
-        constants.TELECOM_PLOT_ENABLED = False
-        constants.RESOURCE_PLOT_ENABLED = False
-    
-    # Apply command-line flags to constants
-    if args.deferred_plots:
-        constants.DEFERRED_PLOTTING = True
-    if args.no_resource_plots:
-        constants.RESOURCE_PLOT_ENABLED = False
-    
-    # GNN configuration
-    if args.no_gnn:
-        constants.GNN_ENABLED = False
-        constants.GNN_TRANSFORMER_ENABLED = False
-    elif args.gnn_enabled:
-        constants.GNN_ENABLED = True
 
-    if args.no_gnn_transformer:
-        constants.GNN_TRANSFORMER_ENABLED = False
-    elif args.gnn_transformer:
-        constants.GNN_TRANSFORMER_ENABLED = True
-        constants.GNN_ENABLED = True
-
-    if args.gnn_mode:
-        constants.GNN_OBSERVATION_MODE = args.gnn_mode
-    
-    # Mobility configuration
-    if args.no_mobility:
-        mobility.MOBILITY_ENABLED = False
-    elif args.mobility:
-        mobility.MOBILITY_ENABLED = True
-    
-    # Random seed for reproducibility
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(args.seed)
-        # Also set the mobility seed
-        mobility.MOBILITY_SEED = args.seed
-        print(f"Random seed set to: {args.seed}")
+    if args.ui:
+        cmd = [sys.executable, "launch_interface.py"]
+        return subprocess.run(cmd, check=False).returncode
     
     # Load configurations
     try:
@@ -219,29 +116,49 @@ def main():
         print(f"Error parsing optimization config JSON: {e}")
         return 1
     
+    # Apply runtime settings from config files
+    runtime = apply_runtime_settings(opt, sce)
+
+    # Command-line seed overrides config seed
+    seed = args.seed if args.seed is not None else getattr(opt, "seed", None)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        mobility.MOBILITY_SEED = seed
+        print(f"Random seed set to: {seed}")
+
     # Print device info
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    from functions.gpu_manager import GPUManager
+    _gpu = GPUManager.from_opt(opt)
+    device = _gpu.device
     print(f"Using device: {device}")
 
-    if device.type == "cuda":
-        # Favor throughput on modern NVIDIA GPUs.
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        torch.backends.cudnn.benchmark = True
-        if hasattr(torch, "set_float32_matmul_precision"):
-            torch.set_float32_matmul_precision("high")
-    
+    env_type = resolve_environment_type(opt)
+
     # Print config summary
     print(f"\n--- Configuration Summary ---")
     print(f"Agents: {opt.nagents}")
     print(f"Episodes: {opt.nepisodes}")
     print(f"Steps per episode: {opt.nsteps}")
-    print(f"Base stations: {sce.nMBS} MBS, {sce.nPBS} PBS, {sce.nFBS} FBS")
+    if env_type == "cell_free":
+        n_ap = getattr(sce, "nAP", None)
+        if n_ap is None:
+            n_ap = (getattr(sce, "nMBS", 0) or 0) + (getattr(sce, "nPBS", 0) or 0) + (getattr(sce, "nFBS", 0) or 0)
+        print(f"Access points: {n_ap} APs (Cell-Free)")
+    else:
+        print(f"Base stations: {sce.nMBS} MBS, {sce.nPBS} PBS, {sce.nFBS} FBS")
     print(f"Channels: {sce.nChannel}")
     print(f"Trials: {args.ntrials}")
-    print(f"GNN enabled: {constants.GNN_ENABLED}")
-    print(f"GNN transformer: {constants.GNN_TRANSFORMER_ENABLED}")
-    print(f"Mobility enabled: {mobility.MOBILITY_ENABLED}")
+    print(f"Environment type: {env_type}")
+    print(f"GNN enabled: {runtime['gnn_enabled']}")
+    print(f"GNN transformer: {runtime['gnn_transformer_enabled']}")
+    print(f"Mobility enabled: {runtime['mobility_enabled']}")
+    print(f"Fast mode: {runtime['fast_mode']}")
+    print(f"Plots: network={runtime['network_plot_enabled']}, telecom={runtime['telecom_plot_enabled']}, resource={runtime['resource_plot_enabled']}")
+    print(f"Deferred plotting: {runtime['deferred_plotting']}")
     if args.run_name:
         print(f"Run name: {args.run_name}")
     print(f"-----------------------------\n")
