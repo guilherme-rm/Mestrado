@@ -14,10 +14,10 @@
   "nChannel": 30,
   "N0": -174,
   "QoS_thr": 5,
-  "profit": 0.5,
+  "profit": 1.0,
   "power_cost": 0.0005,
   "action_cost": 0.001,
-  "negative_cost": -1.0,
+  "negative_cost": -0.3,
   "_doc": {
     "nAP": "Number of distributed Access Points.",
     "nCPU": "Number of Central Processing Units (CPU clusters).",

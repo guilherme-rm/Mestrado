@@ -1094,11 +1094,14 @@ class ExperimentManager:
         else:
             self.mobility_manager = None
         
-        # Create GNN manager if enabled
+        # Create GNN manager if enabled (reads params from opt when available)
+        from constants import GNN_ENABLED as _GNN_ENABLED_DEFAULT
+        _gnn_enabled = bool(getattr(self.opt, "gnn_enabled", _GNN_ENABLED_DEFAULT))
         self.gnn_manager = GNNObservationManager(
             scenario=self.scenario,
             device=self.device,
-            enabled=GNN_ENABLED,
+            enabled=_gnn_enabled,
+            opt=self.opt,
         )
         
         # Create agents (with mobility and GNN support)

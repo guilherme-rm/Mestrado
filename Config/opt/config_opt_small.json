@@ -6,7 +6,7 @@
   "momentum": 0.005,
   "tau": 0.005,
   "batch_size": 64,
-  "gamma": 0.9,
+  "gamma": 0.95,
 
   "min_memory_for_learning": 8,
   "action_strategy": "langevin",
@@ -21,7 +21,7 @@
 
   "nepisodes": 500,
   "nsteps": 50,
-  "nupdate": 50,
+  "nupdate": 10,
 
   "early_termination": true,
   "learn_every": 1,

@@ -65,6 +65,13 @@ def main():
         help="Path to RL/optimization config (opt.json)",
     )
     parser.add_argument(
+        "-c3", "--config_net",
+        type=str,
+        default=None,
+        help="Path to network hyperparameter config (HyperparameterConfig/network_*.json). "
+             "Keys are merged into opt, overriding any matching opt values.",
+    )
+    parser.add_argument(
         "-n", "--ntrials",
         type=int,
         default=1,
@@ -115,6 +122,23 @@ def main():
     except json.JSONDecodeError as e:
         print(f"Error parsing optimization config JSON: {e}")
         return 1
+
+    # Merge network hyperparameter config into opt (overrides matching keys)
+    if args.config_net:
+        try:
+            with open(args.config_net, "r") as f:
+                net_cfg = json.load(f)
+            # Strip metadata keys that start with "_"
+            for k, v in net_cfg.items():
+                if not k.startswith("_"):
+                    opt[k] = v
+            print(f"Loaded network hyperparameter config: {args.config_net}")
+        except FileNotFoundError:
+            print(f"Error: Network config file not found: {args.config_net}")
+            return 1
+        except json.JSONDecodeError as e:
+            print(f"Error parsing network config JSON: {e}")
+            return 1
     
     # Apply runtime settings from config files
     runtime = apply_runtime_settings(opt, sce)

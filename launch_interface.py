@@ -20,8 +20,11 @@ CONFIG_DIR = ROOT / "Config"
 HETNET_DIR = CONFIG_DIR / "hetnet"
 CELL_FREE_DIR = CONFIG_DIR / "cell_free"
 OPT_DIR = CONFIG_DIR / "opt"
+HYPERPARAMS_DIR = ROOT / "HyperparameterConfig"
 GENERATED_OPT = CONFIG_DIR / "config_runtime_generated_opt.json"
 GENERATED_SCE = CONFIG_DIR / "config_runtime_generated_sce.json"
+
+GNN_ARCH_OPTIONS = ["Disabled", "GCN", "GAT", "SAGE", "Transformer"]
 
 
 def _list_scenario_files(env_type: str):
@@ -32,6 +35,30 @@ def _list_scenario_files(env_type: str):
         if files:
             return files
     return []
+
+
+def _list_net_files():
+    """Return sorted list of network hyperparameter JSON files."""
+    if HYPERPARAMS_DIR.is_dir():
+        files = sorted([p for p in HYPERPARAMS_DIR.glob("network_*.json") if p.is_file()])
+        if files:
+            return files
+    return []
+
+
+def _net_path_for(size: str) -> Path:
+    """Canonical network hyperparameter path for a given size."""
+    return HYPERPARAMS_DIR / f"network_{size}.json"
+
+
+def _default_net_file() -> Path | None:
+    """Return the first available network config file, preferring 'small'."""
+    for preferred in ("small", "medium", "test", "large"):
+        p = _net_path_for(preferred)
+        if p.exists():
+            return p
+    files = _list_net_files()
+    return files[0] if files else None
 
 
 def _list_opt_files():
@@ -93,7 +120,14 @@ def _preset_label(size: str, env_type: str) -> str:
     return f"{subdir}/{sce_name}  +  opt/{opt_name}"
 
 
-def _run_main(config_sce: Path, config_opt: Path, ntrials: int, run_name: str | None, seed: str | None):
+def _run_main(
+    config_sce: Path,
+    config_opt: Path,
+    ntrials: int,
+    run_name: str | None,
+    seed: str | None,
+    config_net: Path | None = None,
+):
     cmd = [
         sys.executable,
         str(ROOT / "main.py"),
@@ -104,6 +138,8 @@ def _run_main(config_sce: Path, config_opt: Path, ntrials: int, run_name: str | 
         "-n",
         str(ntrials),
     ]
+    if config_net:
+        cmd.extend(["-c3", str(config_net)])
     if run_name:
         cmd.extend(["--run-name", run_name])
     if seed:
@@ -123,9 +159,18 @@ def _apply_runtime_flags(opt_payload: dict, runtime_vars: dict):
     opt_payload["telecom_plot_enabled"] = bool(runtime_vars["telecom_plot_enabled"].get())
     opt_payload["resource_plot_enabled"] = bool(runtime_vars["resource_plot_enabled"].get())
     opt_payload["deferred_plotting"] = bool(runtime_vars["deferred_plotting"].get())
-    opt_payload["gnn_enabled"] = bool(runtime_vars["gnn_enabled"].get())
-    opt_payload["gnn_transformer_enabled"] = bool(runtime_vars["gnn_transformer_enabled"].get())
     opt_payload["mobility_enabled"] = bool(runtime_vars["mobility_enabled"].get())
+
+    # GNN architecture is a single exclusive choice
+    arch = runtime_vars["gnn_arch"].get()
+    if arch == "Disabled":
+        opt_payload["gnn_enabled"] = False
+        opt_payload["gnn_transformer_enabled"] = False
+        opt_payload.pop("gnn_conv_type", None)
+    else:
+        opt_payload["gnn_enabled"] = True
+        opt_payload["gnn_conv_type"] = arch.lower()
+        opt_payload["gnn_transformer_enabled"] = (arch == "Transformer")
 
 
 def _load_runtime_flags_from_opt(opt_payload: dict, runtime_vars: dict):
@@ -136,9 +181,18 @@ def _load_runtime_flags_from_opt(opt_payload: dict, runtime_vars: dict):
     runtime_vars["telecom_plot_enabled"].set(bool(opt_payload.get("telecom_plot_enabled", True)))
     runtime_vars["resource_plot_enabled"].set(bool(opt_payload.get("resource_plot_enabled", True)))
     runtime_vars["deferred_plotting"].set(bool(opt_payload.get("deferred_plotting", False)))
-    runtime_vars["gnn_enabled"].set(bool(opt_payload.get("gnn_enabled", False)))
-    runtime_vars["gnn_transformer_enabled"].set(bool(opt_payload.get("gnn_transformer_enabled", False)))
     runtime_vars["mobility_enabled"].set(bool(opt_payload.get("mobility_enabled", False)))
+
+    # Reconstruct single GNN arch choice from flags
+    gnn_enabled = bool(opt_payload.get("gnn_enabled", False))
+    gnn_transformer = bool(opt_payload.get("gnn_transformer_enabled", False))
+    conv_type = str(opt_payload.get("gnn_conv_type", "gcn")).upper()
+    if not gnn_enabled:
+        runtime_vars["gnn_arch"].set("Disabled")
+    elif gnn_transformer or conv_type == "TRANSFORMER":
+        runtime_vars["gnn_arch"].set("Transformer")
+    else:
+        runtime_vars["gnn_arch"].set(conv_type if conv_type in GNN_ARCH_OPTIONS else "GCN")
 
 
 def _terminal_fallback():
@@ -164,15 +218,32 @@ def _terminal_fallback():
 
     opt["environment_type"] = env
     fast_mode = input(f"fast_mode [true/false] ({str(opt.get('fast_mode', False)).lower()}): ").strip().lower()
-    gnn_enabled = input(f"gnn_enabled [true/false] ({str(opt.get('gnn_enabled', False)).lower()}): ").strip().lower()
+    gnn_arch = input(f"GNN architecture [{'/'.join(GNN_ARCH_OPTIONS)}] (Disabled): ").strip() or "Disabled"
     plot_enabled = input(f"enable_plot [true/false] ({str(opt.get('enable_plot', True)).lower()}): ").strip().lower()
 
     if fast_mode in {"true", "false"}:
         opt["fast_mode"] = fast_mode == "true"
-    if gnn_enabled in {"true", "false"}:
-        opt["gnn_enabled"] = gnn_enabled == "true"
     if plot_enabled in {"true", "false"}:
         opt["enable_plot"] = plot_enabled == "true"
+    if gnn_arch in GNN_ARCH_OPTIONS:
+        if gnn_arch == "Disabled":
+            opt["gnn_enabled"] = False
+            opt["gnn_transformer_enabled"] = False
+        else:
+            opt["gnn_enabled"] = True
+            opt["gnn_conv_type"] = gnn_arch.lower()
+            opt["gnn_transformer_enabled"] = (gnn_arch == "Transformer")
+
+    # Network hyperparameter config
+    net_files = _list_net_files()
+    net_path = None
+    if net_files:
+        net_names = [p.name for p in net_files]
+        print(f"\nAvailable network configs: {', '.join(net_names)}")
+        net_choice = input(f"Network config file (leave blank to skip): ").strip()
+        if net_choice:
+            matched = [p for p in net_files if p.name == net_choice or p.stem == net_choice]
+            net_path = matched[0] if matched else None
 
     _save_json(GENERATED_SCE, sce)
     _save_json(GENERATED_OPT, opt)
@@ -181,7 +252,7 @@ def _terminal_fallback():
     run_name = input("run_name (optional): ").strip() or None
     seed = input("seed (optional): ").strip() or None
 
-    _run_main(GENERATED_SCE, GENERATED_OPT, ntrials, run_name, seed)
+    _run_main(GENERATED_SCE, GENERATED_OPT, ntrials, run_name, seed, config_net=net_path)
 
 
 def _tk_ui():
@@ -202,6 +273,7 @@ def _tk_ui():
     container.pack(fill="both", expand=True)
 
     size_var = tk.StringVar(value=default_size)
+    net_var = tk.StringVar(value="")
     ntrials_var = tk.StringVar(value="1")
     run_name_var = tk.StringVar(value="")
     seed_var = tk.StringVar(value="")
@@ -215,8 +287,7 @@ def _tk_ui():
         "telecom_plot_enabled": tk.BooleanVar(value=True),
         "resource_plot_enabled": tk.BooleanVar(value=True),
         "deferred_plotting": tk.BooleanVar(value=False),
-        "gnn_enabled": tk.BooleanVar(value=False),
-        "gnn_transformer_enabled": tk.BooleanVar(value=False),
+        "gnn_arch": tk.StringVar(value="Disabled"),
         "mobility_enabled": tk.BooleanVar(value=False),
     }
 
@@ -259,8 +330,16 @@ def _tk_ui():
         ttk.Checkbutton(opts, text="Telecom plot", variable=runtime_vars["telecom_plot_enabled"]).grid(row=2, column=1, sticky="w")
         ttk.Checkbutton(opts, text="Resource plot", variable=runtime_vars["resource_plot_enabled"]).grid(row=3, column=0, sticky="w")
         ttk.Checkbutton(opts, text="Deferred plotting", variable=runtime_vars["deferred_plotting"]).grid(row=3, column=1, sticky="w")
-        ttk.Checkbutton(opts, text="GNN enabled", variable=runtime_vars["gnn_enabled"]).grid(row=4, column=0, sticky="w")
-        ttk.Checkbutton(opts, text="Transformer GNN", variable=runtime_vars["gnn_transformer_enabled"]).grid(row=4, column=1, sticky="w")
+
+        ttk.Label(opts, text="GNN architecture").grid(row=4, column=0, sticky="w")
+        ttk.Combobox(
+            opts,
+            textvariable=runtime_vars["gnn_arch"],
+            values=GNN_ARCH_OPTIONS,
+            state="readonly",
+            width=14,
+        ).grid(row=4, column=1, sticky="w", padx=8)
+
         ttk.Checkbutton(opts, text="Mobility enabled", variable=runtime_vars["mobility_enabled"]).grid(row=5, column=0, sticky="w")
         return opts
 
@@ -279,6 +358,14 @@ def _tk_ui():
     def _get_opt_path() -> Path:
         """Resolve optimization path from current size."""
         return _opt_path_for(size_var.get())
+
+    def _get_net_path() -> Path | None:
+        """Resolve network hyperparameter path from net_var (full path or None)."""
+        val = net_var.get().strip()
+        if not val or val == "(none)":
+            return None
+        p = Path(val)
+        return p if p.exists() else None
 
     def run_clicked():
         try:
@@ -307,7 +394,8 @@ def _tk_ui():
             ntrials = int(ntrials_var.get().strip() or "1")
             run_name = run_name_var.get().strip() or None
             seed = seed_var.get().strip() or None
-            _run_main(GENERATED_SCE, GENERATED_OPT, ntrials, run_name, seed)
+            net_path = _get_net_path()
+            _run_main(GENERATED_SCE, GENERATED_OPT, ntrials, run_name, seed, config_net=net_path)
         except Exception as e:
             messagebox.showerror("Run Error", str(e))
 
@@ -315,7 +403,7 @@ def _tk_ui():
         nonlocal sce_text, opt_text
         clear_container()
         mode_var.set("custom" if custom_mode else "preset")
-        root.geometry("1160x800" if custom_mode else "920x520")
+        root.geometry("1160x820" if custom_mode else "960x560")
 
         header = ttk.Frame(container)
         header.pack(fill="x", pady=(0, 10))
@@ -345,6 +433,20 @@ def _tk_ui():
         )
         size_label.grid(row=0, column=2, sticky="w", padx=(12, 0))
 
+        # Network hyperparameter file selector
+        ttk.Label(presets, text="Network config").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        net_files = _list_net_files()
+        net_display = ["(none)"] + [str(p) for p in net_files]
+        # Pre-select matching size if available
+        default_net = _net_path_for(size_var.get())
+        net_var.set(str(default_net) if default_net.exists() else "(none)")
+        net_combo = ttk.Combobox(
+            presets, textvariable=net_var,
+            values=net_display,
+            state="readonly", width=42,
+        )
+        net_combo.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 0))
+
         def _refresh_size_label(*_):
             env = runtime_vars["environment_type"].get()
             size_label.config(text=_preset_label(size_var.get(), env))
@@ -366,6 +468,10 @@ def _tk_ui():
         def _on_size_selected(*_):
             _refresh_size_label()
             load_opt_flags_from_selected_preset()
+            # Auto-select matching network config file when size changes
+            candidate = _net_path_for(size_var.get())
+            if candidate.exists():
+                net_var.set(str(candidate))
             if custom_mode:
                 if sce_text is not None:
                     _load_to_editor(sce_text, _get_sce_path())

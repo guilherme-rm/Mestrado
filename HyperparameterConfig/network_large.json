@@ -1,0 +1,33 @@
+{
+  "_name": "Network hyperparameters — large (wider DNN, deeper GNN)",
+
+  "dnn_hidden_layers": [512, 256, 256],
+
+  "grad_clip_value": 1.0,
+  "shared_agent_networks": false,
+
+  "gnn_enabled": false,
+  "gnn_conv_type": "gcn",
+  "gnn_hidden_dim": 128,
+  "gnn_output_dim": 128,
+  "gnn_num_layers": 3,
+  "gnn_dropout": 0.1,
+  "gnn_observation_mode": "replace",
+  "gnn_include_interference_edges": true,
+  "gnn_include_potential_links": true,
+
+  "_doc": {
+    "dnn_hidden_layers": "List of hidden layer widths for the feedforward DQN (input→hidden→output).",
+    "grad_clip_value": "Max gradient norm for clipping. Applied per-parameter during backprop.",
+    "shared_agent_networks": "If true, all agents share one policy/target network (faster, less specialization).",
+    "gnn_enabled": "Enable GNN-based observation encoding instead of flat state.",
+    "gnn_conv_type": "GNN layer type: gcn | gat | sage | transformer.",
+    "gnn_hidden_dim": "Hidden dimension of GNN layers.",
+    "gnn_output_dim": "Output embedding dimension from GNN (DNN input when GNN is enabled).",
+    "gnn_num_layers": "Number of GNN message-passing layers.",
+    "gnn_dropout": "Dropout probability inside the GNN.",
+    "gnn_observation_mode": "replace: GNN embeddings only | augment: GNN + flat obs concatenated.",
+    "gnn_include_interference_edges": "Add interference edges to the graph.",
+    "gnn_include_potential_links": "Add potential AP–UE link edges to the graph."
+  }
+}

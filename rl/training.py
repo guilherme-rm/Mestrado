@@ -24,6 +24,12 @@ from constants import (
     GNN_HETEROGENEOUS,
     SHARED_AGENT_NETWORKS,
 )
+
+
+def _get(obj, key, default):
+    """getattr with fallback for DotDic/None objects."""
+    val = getattr(obj, key, None)
+    return default if val is None else val
 from .agent import Agent, TrainMetrics, DQNOptimizer
 from .networks import DNN
 from .memory import ReplayMemory
@@ -361,7 +367,7 @@ class GNNObservationManager:
     
     Usage:
         # Create once at training start
-        gnn_manager = GNNObservationManager(scenario, device)
+        gnn_manager = GNNObservationManager(scenario, device, opt=opt)
         
         # Each step, get observations
         if gnn_manager.enabled:
@@ -374,6 +380,7 @@ class GNNObservationManager:
         scenario,
         device: torch.device,
         enabled: bool = GNN_ENABLED,
+        opt=None,
     ):
         """Initialize the GNN observation manager.
         
@@ -386,24 +393,31 @@ class GNNObservationManager:
         self.device = device
         self._enabled = enabled
         self._encoder = None
+        self._opt = opt
         
         if enabled:
             self._init_encoder()
     
     def _init_encoder(self):
-        """Lazily initialize the GNN encoder."""
+        """Lazily initialize the GNN encoder, reading params from opt if available."""
         from rl.gnn import GNNObservationEncoder
-        
+        o = self._opt
+        conv_type = _get(o, "gnn_conv_type", "gcn")
+        transformer = _get(o, "gnn_transformer_enabled", False)
+        if transformer:
+            conv_type = "transformer"
+
         self._encoder = GNNObservationEncoder(
             scenario=self.scenario,
             device=self.device,
-            mode=GNN_OBSERVATION_MODE,
-            gnn_output_dim=GNN_OUTPUT_DIM,
-            gnn_hidden_dim=GNN_HIDDEN_DIM,
-            gnn_num_layers=GNN_NUM_LAYERS,
-            use_attention=GNN_USE_ATTENTION,
-            include_interference_edges=GNN_INCLUDE_INTERFERENCE_EDGES,
-            heterogeneous=GNN_HETEROGENEOUS,
+            mode=_get(o, "gnn_observation_mode", GNN_OBSERVATION_MODE),
+            gnn_output_dim=_get(o, "gnn_output_dim", GNN_OUTPUT_DIM),
+            gnn_hidden_dim=_get(o, "gnn_hidden_dim", GNN_HIDDEN_DIM),
+            gnn_num_layers=_get(o, "gnn_num_layers", GNN_NUM_LAYERS),
+            use_attention=_get(o, "gnn_use_attention", GNN_USE_ATTENTION),
+            include_interference_edges=_get(o, "gnn_include_interference_edges", GNN_INCLUDE_INTERFERENCE_EDGES),
+            heterogeneous=_get(o, "gnn_heterogeneous", GNN_HETEROGENEOUS),
+            conv_type=conv_type,
         )
     
     @property

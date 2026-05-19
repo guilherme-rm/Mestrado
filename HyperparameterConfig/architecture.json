@@ -1,5 +1,5 @@
 {
-  "_description": "Hardcoded architecture and physics constants from the codebase. Not read at runtime — documentation only.",
+  "_description": "Hardcoded architecture and physics constants from the codebase.",
 
   "dnn_architecture": {
     "_note": "Defined in rl/networks.py — DNN class",
