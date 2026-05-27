@@ -39,6 +39,7 @@ class CellFreeRewardCalculator:
         primary_ap = int(np.clip(primary_ap, 0, n_ap - 1))
 
         ue_pos_np = self._to_numpy(agent_location)
+        ue_cache_key = tuple(np.round(ue_pos_np.astype(np.float64), 4))
         beta_self = scenario.large_scale_fading(ue_pos_np)
 
         assoc_manager = UserCentricAssociationManager(
@@ -63,10 +64,17 @@ class CellFreeRewardCalculator:
         allocator = ClusterPowerAllocator(getattr(scenario.cfg, "ap_max_tx_power_dbm", 23.0))
         per_ap_power = allocator.allocate(serving_cluster, profile_scale, ap_user_count)
 
-        useful_signal = self._compute_useful_signal(serving_cluster, per_ap_power, beta_self, scenario)
+        useful_signal = self._compute_useful_signal(
+            serving_cluster,
+            per_ap_power,
+            beta_self,
+            scenario,
+            ue_cache_key,
+        )
         interference = self._compute_interference(
             action_all=action_all,
             target_ue_pos=ue_pos_np,
+            target_ue_cache_key=ue_cache_key,
             scenario=scenario,
             assoc_manager=assoc_manager,
             exclude_cluster=set(serving_cluster),
@@ -77,7 +85,11 @@ class CellFreeRewardCalculator:
         sinr = useful_signal / max(interference + noise_mw, 1e-20)
         rate_mbps = (float(self.sce.BW) * np.log2(1.0 + sinr)) / 1e6
 
-        min_required_rate = float(getattr(self.sce, "min_required_rate_mbps", 1.0) or 1.0)
+        sinr_thr_linear = 10 ** (float(self.sce.QoS_thr) / 10.0)
+        min_required_rate = float(
+            getattr(self.sce, "min_required_rate_mbps", None)
+            or (float(self.sce.BW) * np.log2(1.0 + sinr_thr_linear)) / 1e6
+        )
         qos = 1 if rate_mbps >= min_required_rate else 0
 
         total_power_mw = float(sum(per_ap_power.values()))
@@ -131,11 +143,15 @@ class CellFreeRewardCalculator:
         per_ap_power: Dict[int, float],
         beta: np.ndarray,
         scenario,
+        ue_cache_key,
     ) -> float:
         if not serving_cluster:
             return 0.0
 
-        h2 = scenario.sample_small_scale_power(len(serving_cluster))
+        h2 = scenario.sample_small_scale_power(
+            len(serving_cluster),
+            cache_key=("useful", ue_cache_key, tuple(serving_cluster)),
+        )
         total = 0.0
         for i, ap_idx in enumerate(serving_cluster):
             total += float(per_ap_power[ap_idx]) * float(beta[ap_idx]) * float(h2[i])
@@ -145,6 +161,7 @@ class CellFreeRewardCalculator:
         self,
         action_all,
         target_ue_pos: np.ndarray,
+        target_ue_cache_key,
         scenario,
         assoc_manager,
         exclude_cluster,
@@ -172,7 +189,10 @@ class CellFreeRewardCalculator:
             power_map = allocator.allocate(interfering_aps, profile_scale, ap_user_count)
 
             beta_target = scenario.large_scale_fading(target_ue_pos)
-            h2 = scenario.sample_small_scale_power(len(interfering_aps))
+            h2 = scenario.sample_small_scale_power(
+                len(interfering_aps),
+                cache_key=("interference", target_ue_cache_key, ue_idx, tuple(interfering_aps)),
+            )
             for i, ap_idx in enumerate(interfering_aps):
                 interference += float(power_map[ap_idx]) * float(beta_target[ap_idx]) * float(h2[i])
 

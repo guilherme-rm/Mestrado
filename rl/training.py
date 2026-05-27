@@ -43,6 +43,41 @@ class TrainingContext:
     rewards: torch.Tensor
     qos: torch.Tensor
 
+
+def get_flat_state_dim(opt) -> int:
+    """Return the flat non-GNN state size for the selected environment."""
+    env_type = str(getattr(opt, "environment_type", "hetnet") or "hetnet").strip().lower()
+    nagents = int(getattr(opt, "nagents", 1) or 1)
+    if env_type == "cell_free":
+        return nagents * 3
+    return nagents
+
+
+def _required_rate_mbps(sce) -> float:
+    explicit_rate = getattr(sce, "min_required_rate_mbps", None)
+    if explicit_rate is not None:
+        return float(explicit_rate)
+
+    sinr_thr_linear = 10 ** (float(getattr(sce, "QoS_thr", 0.0) or 0.0) / 10.0)
+    return (float(getattr(sce, "BW", 1.0) or 1.0) * np.log2(1.0 + sinr_thr_linear)) / 1e6
+
+
+def build_next_state(
+    qos: torch.Tensor,
+    capacity: torch.Tensor,
+    actions: torch.Tensor,
+    scenario,
+) -> torch.Tensor:
+    """Build the flat state representation for the next step."""
+    if hasattr(scenario, "begin_step"):
+        required_rate = max(_required_rate_mbps(scenario.sce), 1e-6)
+        capacity_feature = torch.clamp(capacity / required_rate, min=0.0, max=2.0) / 2.0
+        n_actions = max(1, int(scenario.BS_Number()) * int(getattr(scenario.sce, "nChannel", 1) or 1))
+        action_feature = actions.to(device=qos.device, dtype=torch.float32) / float(max(1, n_actions - 1))
+        return torch.cat((qos.to(torch.float32), capacity_feature, action_feature), dim=0)
+
+    return qos.to(torch.float32).clone()
+
 def select_actions(
     agents: Sequence[Agent], state: torch.Tensor, scenario, eps: float,
     gnn_observations: Dict[int, torch.Tensor] = None,
@@ -148,17 +183,17 @@ def compute_rewards_and_next_state(
             ag.location.detach().cpu().numpy() if isinstance(ag.location, torch.Tensor) else ag.location
             for ag in agents
         ])
+    if hasattr(scenario, "begin_step"):
+        scenario.begin_step()
     rewards = torch.zeros(nagents, device=state.device)
     qos = torch.zeros(nagents, device=state.device)
-    next_state = torch.zeros(nagents, device=state.device)
     capacity = torch.zeros(nagents, device=state.device)
     for i, ag in enumerate(agents):
         qos_i, reward_i, cap_i = ag.Get_Reward(actions, actions[i], state, scenario)
         qos[i] = qos_i
         rewards[i] = reward_i
         capacity[i] = cap_i
-        # State representation is the QoS satisfaction of the previous step
-        next_state[i] = qos_i
+    next_state = build_next_state(qos, capacity, actions, scenario)
     return rewards, qos, next_state, capacity
 
 
@@ -279,10 +314,11 @@ def store_and_learn(
     return metrics, timing
 
 
-def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
+def initialize_episode(nagents: int, device: torch.device, state_dim: int | None = None) -> TrainingContext:
+    state_dim = nagents if state_dim is None else int(state_dim)
     return TrainingContext(
-        state=torch.zeros(nagents, device=device),
-        next_state=torch.zeros(nagents, device=device),
+        state=torch.zeros(state_dim, device=device),
+        next_state=torch.zeros(state_dim, device=device),
         actions=torch.zeros(nagents, dtype=torch.long, device=device),
         rewards=torch.zeros(nagents, device=device),
         qos=torch.zeros(nagents, device=device),
@@ -290,7 +326,8 @@ def initialize_episode(nagents: int, device: torch.device) -> TrainingContext:
 
 
 def should_terminate(state: torch.Tensor, target_state: torch.Tensor) -> bool:
-    return bool(torch.all(state.eq(target_state)))
+    tracked_state = state[: target_state.numel()]
+    return bool(torch.all(tracked_state.eq(target_state)))
 
 
 def create_agents(
@@ -317,11 +354,13 @@ def create_agents(
     """
     shared_networks = None
     shared_memory = None
+    flat_state_dim = get_flat_state_dim(opt)
+    model_input_dim = gnn_input_dim if gnn_input_dim is not None else flat_state_dim
     
     if SHARED_AGENT_NETWORKS:
         # Create single shared network for all agents
-        model_policy = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
-        model_target = DNN(opt, sce, scenario, input_dim=gnn_input_dim).to(device)
+        model_policy = DNN(opt, sce, scenario, input_dim=model_input_dim).to(device)
+        model_target = DNN(opt, sce, scenario, input_dim=model_input_dim).to(device)
         model_target.load_state_dict(model_policy.state_dict())
         model_target.eval()
         
@@ -349,7 +388,7 @@ def create_agents(
             index=i,
             device=device,
             mobility_manager=mobility_manager,
-            input_dim=gnn_input_dim,
+            input_dim=model_input_dim,
             shared_networks=shared_networks,
             shared_memory=shared_memory,
         )

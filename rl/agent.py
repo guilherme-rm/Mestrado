@@ -504,6 +504,9 @@ class ActionSelector:
         Returns:
             Selected action index
         """
+        if not torch.isfinite(q_values).all():
+            return int(torch.nan_to_num(q_values, nan=float("-inf")).argmax().item())
+
         temperature = max(epsilon, 0.05)
         step_size = 0.05
         n_steps = 15
@@ -517,6 +520,8 @@ class ActionSelector:
             log_probs = log_probs + (step_size / 2) * score + (step_size ** 0.5) * noise
         
         probs = torch.softmax(log_probs, dim=-1)
+        if not torch.isfinite(probs).all() or float(probs.sum().item()) <= 0.0:
+            return int(q_values.argmax().item())
         return int(torch.multinomial(probs, 1).item())
     
     def _epsilon_greedy_original(self, q_values: torch.Tensor, epsilon: float) -> int:
@@ -535,6 +540,8 @@ class ActionSelector:
     def _boltzmann(self, q_values: torch.Tensor, epsilon: float) -> int:
         temperature = max(epsilon, 0.01)  
         probs = torch.softmax(q_values / temperature, dim=-1)
+        if not torch.isfinite(probs).all() or float(probs.sum().item()) <= 0.0:
+            return int(q_values.argmax().item())
         return int(torch.multinomial(probs, 1).item())
     
     def select(self, q_values: torch.Tensor, epsilon: float) -> int:

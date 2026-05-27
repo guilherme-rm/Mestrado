@@ -132,7 +132,7 @@ class EpsilonScheduler:
     def get_epsilon(self, current_step: int) -> float:
         """Compute epsilon based on selected policy."""
         if self.policy == "linear_increasing":
-            eps = self.eps_min + self.eps_increment * self.current_step_in_episode * (self.current_episode + 1)
+            eps = self.eps_min + self.eps_increment * self.current_step_in_episode
             if eps > self.eps_max:
                 eps = self.eps_max
             self.current_step_in_episode += 1
@@ -180,6 +180,7 @@ class EpisodeMetrics:
     qos_sum: float = 0.0
     capacity_sum: float = 0.0
     steps: int = 0
+    num_agents: int = 0
     
     # Track reward distribution
     reward_min: float = float('inf')
@@ -200,6 +201,9 @@ class EpisodeMetrics:
     
     def record_step(self, rewards: torch.Tensor, qos: torch.Tensor, capacity: torch.Tensor):
         """Record environment metrics from a single step."""
+        if self.num_agents <= 0:
+            self.num_agents = int(rewards.numel())
+
         stat_vec = torch.stack(
             [rewards.mean(), rewards.sum(), qos.mean(), capacity.sum()]
         ).detach().cpu()
@@ -260,6 +264,14 @@ class EpisodeMetrics:
     @property
     def avg_capacity(self) -> float:
         return self.capacity_sum / max(1, self.steps)
+
+    @property
+    def return_per_step(self) -> float:
+        return self.return_total / max(1, self.steps)
+
+    @property
+    def return_per_agent_step(self) -> float:
+        return self.return_total / max(1, self.steps * max(1, self.num_agents))
     
     @property
     def success_rate(self) -> float:
@@ -294,6 +306,7 @@ class MetricsAggregator:
     def __init__(self, convergence_window: int = 50, convergence_threshold: float = 0.01):
         self.avg_rewards: List[float] = []
         self.returns: List[float] = []
+        self.returns_per_agent_step: List[float] = []
         self.qos_rates: List[float] = []
         
         # Best episode tracking
@@ -315,6 +328,7 @@ class MetricsAggregator:
         """Record metrics from a completed episode."""
         self.avg_rewards.append(metrics.avg_reward)
         self.returns.append(metrics.return_total)
+        self.returns_per_agent_step.append(metrics.return_per_agent_step)
         self.qos_rates.append(metrics.qos_rate)
         
         # Track best episode (by return)
@@ -324,6 +338,7 @@ class MetricsAggregator:
             self.best_episode = {
                 "episode": episode_idx,
                 "return": metrics.return_total,
+                "return_per_agent_step": metrics.return_per_agent_step,
                 "avg_reward": metrics.avg_reward,
                 "qos_rate": metrics.qos_rate,
                 "steps": metrics.steps,
@@ -378,6 +393,7 @@ class MetricsAggregator:
         return {
             "mean_last_100_reward": self.mean_last_k(self.avg_rewards, k),
             "mean_last_100_return": self.mean_last_k(self.returns, k),
+            "mean_last_100_return_per_agent_step": self.mean_last_k(self.returns_per_agent_step, k),
             "mean_last_100_qos": self.mean_last_k(self.qos_rates, k),
         }
     
@@ -386,9 +402,11 @@ class MetricsAggregator:
         return {
             "mean_reward": self.mean_last_k(self.avg_rewards, k),
             "mean_return": self.mean_last_k(self.returns, k),
+            "mean_return_per_agent_step": self.mean_last_k(self.returns_per_agent_step, k),
             "mean_qos": self.mean_last_k(self.qos_rates, k),
             "std_reward": self._std_last_k(self.avg_rewards, k),
             "std_return": self._std_last_k(self.returns, k),
+            "std_return_per_agent_step": self._std_last_k(self.returns_per_agent_step, k),
             "std_qos": self._std_last_k(self.qos_rates, k),
             "max_return": max(self.returns) if self.returns else None,
             "min_return": min(self.returns) if self.returns else None,
@@ -465,7 +483,8 @@ class EpisodeRunner:
     
     def reset(self):
         """Initialize state for a new episode."""
-        self.ctx = initialize_episode(self.config.nagents, self.device)
+        state_dim = self.config.nagents * 3 if hasattr(self.scenario, "begin_step") else self.config.nagents
+        self.ctx = initialize_episode(self.config.nagents, self.device, state_dim=state_dim)
         self.metrics = EpisodeMetrics()
         self.last_actions = [
             deque(maxlen=self.action_tail_len) 
@@ -913,6 +932,8 @@ class Trainer:
             episode=episode,
             steps=metrics.steps,
             return_val=metrics.return_total,
+            return_per_step=metrics.return_per_step,
+            return_per_agent_step=metrics.return_per_agent_step,
             avg_reward=metrics.avg_reward,
             reward_min=metrics.reward_min if metrics.reward_min != float('inf') else "",
             reward_max=metrics.reward_max if metrics.reward_max != float('-inf') else "",
@@ -936,6 +957,7 @@ class Trainer:
         print(
             f"Ep: {episode} | Steps: {metrics.steps} | "
             f"Dur: {duration:.2f}s | Return: {metrics.return_total:.3f} | "
+            f"Return/Agent/Step: {metrics.return_per_agent_step:.3f} | "
             f"AvgReward: {metrics.avg_reward:.3f} | "
             f"QoSRate: {metrics.qos_rate:.3f} | Eps: {eps:.4f}"
         )
@@ -948,7 +970,7 @@ class Trainer:
                 mean_reward=metrics.avg_reward,
                 qos=metrics.qos_rate,
                 capacity_sum_mbps=metrics.avg_capacity,
-                episode_return=metrics.return_total,
+                episode_return=metrics.return_per_agent_step,
             )
     
     # Checkpointing removed for performance - uncomment if needed

@@ -111,6 +111,8 @@ class EpisodeMetricsLogger:
         "episode",
         "steps",
         "return_val",
+        "return_per_step",
+        "return_per_agent_step",
         "avg_reward",
         "reward_min",
         "reward_max",
@@ -444,11 +446,13 @@ def _build_compact_summary(full_summary: Dict[str, Any]) -> Dict[str, Any]:
         # Key performance metrics
         "final_avg_reward": final.get("mean_reward"),
         "final_avg_return": final.get("mean_return"),
+        "final_avg_return_per_agent_step": final.get("mean_return_per_agent_step"),
         "final_qos_rate": final.get("mean_qos"),
         
         # Best episode
         "best_episode_num": best.get("episode") if best else None,
         "best_episode_return": best.get("return") if best else None,
+        "best_episode_return_per_agent_step": best.get("return_per_agent_step") if best else None,
         "best_episode_qos": best.get("qos_rate") if best else None,
         
         # Training stats

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import Dict, Hashable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .access_point import AccessPoint
@@ -55,6 +55,8 @@ class CellFreeScenario:
         self._aps = self._init_access_points()
         self._cpus = self._init_cpus()
         self._current_ue_positions: Optional[List[np.ndarray]] = None
+        self._step_large_scale_cache: Dict[Tuple[float, float], np.ndarray] = {}
+        self._step_small_scale_cache: Dict[Hashable, np.ndarray] = {}
         self._visual_diagnostics = {
             "serving_clusters": {},
             "ap_loads": {},
@@ -71,6 +73,12 @@ class CellFreeScenario:
             ap.reset()
         for cpu in self._cpus:
             cpu.reset()
+        self.begin_step()
+
+    def begin_step(self):
+        """Reset per-step channel caches to keep one realization per transition."""
+        self._step_large_scale_cache.clear()
+        self._step_small_scale_cache.clear()
 
     def Get_BaseStations(self):  # noqa: N802
         return self._aps
@@ -128,6 +136,11 @@ class CellFreeScenario:
     def large_scale_fading(self, ue_position: np.ndarray) -> np.ndarray:
         """Compute beta_lk from distance-based path loss and optional shadowing."""
         ue_pos = np.array(ue_position, dtype=np.float32)
+        cache_key = tuple(np.round(ue_pos.astype(np.float64), 4))
+        cached = self._step_large_scale_cache.get(cache_key)
+        if cached is not None:
+            return cached.copy()
+
         ap_pos = np.array([ap.get_location() for ap in self._aps], dtype=np.float32)
 
         d = np.linalg.norm(ap_pos - ue_pos[None, :], axis=1)
@@ -142,11 +155,21 @@ class CellFreeScenario:
             path_loss_db = path_loss_db - shadow_db
 
         beta = 10 ** (-path_loss_db / 10.0)
-        return np.maximum(beta, 1e-16)
+        beta = np.maximum(beta, 1e-16)
+        self._step_large_scale_cache[cache_key] = beta.copy()
+        return beta
 
-    def sample_small_scale_power(self, n_links: int) -> np.ndarray:
+    def sample_small_scale_power(self, n_links: int, cache_key: Hashable | None = None) -> np.ndarray:
         """Sample |h_lk|^2 with Rayleigh fading (exponential unit mean)."""
-        return np.random.exponential(scale=1.0, size=int(n_links))
+        if cache_key is not None:
+            cached = self._step_small_scale_cache.get(cache_key)
+            if cached is not None:
+                return cached.copy()
+
+        samples = np.random.exponential(scale=1.0, size=int(n_links))
+        if cache_key is not None:
+            self._step_small_scale_cache[cache_key] = samples.copy()
+        return samples
 
     def _init_access_points(self) -> List[AccessPoint]:
         aps = []

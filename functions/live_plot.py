@@ -159,9 +159,9 @@ class RealTimeStepPlotter:
         ax.plot(
             step, ret_ma, label=f"Return MA (w={self.smooth_window})", color="tab:red"
         )
-        ax.set_title("Episode Return (Cumulative Reward)")
+        ax.set_title("Return per Agent per Step")
         ax.set_xlabel(x_label)
-        ax.set_ylabel("Return")
+        ax.set_ylabel("Return / Agent / Step")
         ax.legend()
         ax.grid(alpha=0.3)
 
