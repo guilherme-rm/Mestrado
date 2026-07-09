@@ -162,6 +162,21 @@ def main():
 
     env_type = resolve_environment_type(opt)
 
+    if env_type == "cell_free" and bool(getattr(sce, "enforce_user_count", False)):
+        min_k = int(getattr(sce, "min_nagents", 0) or 0)
+        max_k = int(getattr(sce, "max_nagents", 0) or 0)
+        target_k = int(getattr(sce, "target_nagents", 0) or 0)
+        if target_k <= 0 and min_k > 0 and max_k > 0:
+            target_k = int(round((min_k + max_k) / 2.0))
+        if target_k > 0:
+            current_k = int(getattr(opt, "nagents", target_k) or target_k)
+            if min_k > 0 and current_k < min_k:
+                print(f"[Cell-Free scaling] nagents={current_k} below min_nagents={min_k}. Using target_nagents={target_k}.")
+                opt.nagents = target_k
+            elif max_k > 0 and current_k > max_k:
+                print(f"[Cell-Free scaling] nagents={current_k} above max_nagents={max_k}. Using target_nagents={target_k}.")
+                opt.nagents = target_k
+
     # Print config summary
     print(f"\n--- Configuration Summary ---")
     print(f"Agents: {opt.nagents}")
@@ -172,6 +187,7 @@ def main():
         if n_ap is None:
             n_ap = (getattr(sce, "nMBS", 0) or 0) + (getattr(sce, "nPBS", 0) or 0) + (getattr(sce, "nFBS", 0) or 0)
         print(f"Access points: {n_ap} APs (Cell-Free)")
+        print(f"Cell-Free ratio L/K: {float(n_ap)/max(1.0, float(opt.nagents)):.2f}")
     else:
         print(f"Base stations: {sce.nMBS} MBS, {sce.nPBS} PBS, {sce.nFBS} FBS")
     print(f"Channels: {sce.nChannel}")

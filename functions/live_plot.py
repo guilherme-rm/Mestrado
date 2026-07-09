@@ -39,6 +39,9 @@ class RealTimeStepPlotter:
             "mean_reward": [],
             "return": [],  # Added return tracking
             "qos": [],
+            "soft_qos": [],
+            "jain_fairness": [],
+            "min_rate_mbps": [],
             "capacity_sum_mbps": [],
         }
 
@@ -54,6 +57,9 @@ class RealTimeStepPlotter:
         qos: float,
         capacity_sum_mbps: float | None = None,
         episode_return: float | None = None,
+        mean_soft_qos: float | None = None,
+        jain_fairness: float | None = None,
+        min_rate_mbps: float | None = None,
     ):
         if not self.enabled:
             return
@@ -73,6 +79,9 @@ class RealTimeStepPlotter:
 
         append_metric("capacity_sum_mbps", capacity_sum_mbps)
         append_metric("return", episode_return)
+        append_metric("soft_qos", mean_soft_qos)
+        append_metric("jain_fairness", jain_fairness)
+        append_metric("min_rate_mbps", min_rate_mbps)
 
         # Skip rendering if deferred mode
         if self.deferred:
@@ -112,6 +121,9 @@ class RealTimeStepPlotter:
         rew = self.history["mean_reward"]
         ret = self.history["return"]
         qos = self.history["qos"]
+        soft_qos = self.history["soft_qos"]
+        jain = self.history["jain_fairness"]
+        min_rate = self.history["min_rate_mbps"]
         cap = self.history["capacity_sum_mbps"]
 
         # Calculate moving averages
@@ -119,6 +131,9 @@ class RealTimeStepPlotter:
         cap_ma = self._moving_average(cap)
         ret_ma = self._moving_average(ret)
         qos_ma = self._moving_average(qos)
+        soft_qos_ma = self._moving_average(soft_qos)
+        jain_ma = self._moving_average(jain)
+        min_rate_ma = self._moving_average(min_rate)
 
         plt.close("all")
         # Increased figure size for better visualization (2x3 grid)
@@ -140,12 +155,14 @@ class RealTimeStepPlotter:
         ax.legend()
         ax.grid(alpha=0.3)
 
-        # Plot 2: QoS Satisfaction
+        # Plot 2: QoS Satisfaction (binary + soft)
         ax = axes[0][1]
         ax.plot(step, qos, alpha=0.3, color="tab:purple", label="QoS Rate")
         ax.plot(
             step, qos_ma, color="tab:purple", label=f"QoS MA (w={self.smooth_window})"
         )
+        ax.plot(step, soft_qos, alpha=0.25, color="tab:blue", label="Soft QoS")
+        ax.plot(step, soft_qos_ma, color="tab:blue", linestyle="--", label=f"Soft QoS MA (w={self.smooth_window})")
         ax.set_title("QoS Satisfaction (Mean)")
         ax.set_xlabel(x_label)
         ax.set_ylabel("QoS Rate")
@@ -188,12 +205,16 @@ class RealTimeStepPlotter:
         ax.legend()
         ax.grid(alpha=0.3)
 
-        # Plot 6: Reward Scatter
+        # Plot 6: Fairness / Edge Rate
         ax = axes[1][2]
-        ax.scatter(step, rew, s=8, alpha=0.4)
-        ax.set_title("Reward Scatter")
+        ax.plot(step, jain, alpha=0.3, color="tab:green", label="Jain Fairness")
+        ax.plot(step, jain_ma, color="tab:green", label=f"Jain MA (w={self.smooth_window})")
+        ax.plot(step, min_rate, alpha=0.3, color="tab:brown", label="Min Rate (Mbps)")
+        ax.plot(step, min_rate_ma, color="tab:brown", linestyle="--", label=f"Min Rate MA (w={self.smooth_window})")
+        ax.set_title("Fairness and Edge Throughput")
         ax.set_xlabel(x_label)
-        ax.set_ylabel("Reward")
+        ax.set_ylabel("Metric Value")
+        ax.legend()
         ax.grid(alpha=0.3)
 
         fig.tight_layout()

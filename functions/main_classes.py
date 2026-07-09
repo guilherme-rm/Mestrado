@@ -4,6 +4,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 
+import numpy as np
 import torch
 from functions.gpu_manager import GPUManager
 
@@ -198,8 +199,26 @@ class EpisodeMetrics:
     
     # QoS success tracking
     qos_success_count: int = 0  # Steps where QoS >= threshold
+
+    # Cell-free specific episode-level aggregates
+    mean_soft_qos_sum: float = 0.0
+    min_soft_qos_sum: float = 0.0
+    jain_fairness_sum: float = 0.0
+    min_rate_sum: float = 0.0
+    max_rate_sum: float = 0.0
+    p5_rate_sum: float = 0.0
+    p95_rate_sum: float = 0.0
+    sinr_db_mean_sum: float = 0.0
+    interference_mean_sum: float = 0.0
+    ap_load_mean_sum: float = 0.0
     
-    def record_step(self, rewards: torch.Tensor, qos: torch.Tensor, capacity: torch.Tensor):
+    def record_step(
+        self,
+        rewards: torch.Tensor,
+        qos: torch.Tensor,
+        capacity: torch.Tensor,
+        cellfree_metrics: Optional[Dict[str, Any]] = None,
+    ):
         """Record environment metrics from a single step."""
         if self.num_agents <= 0:
             self.num_agents = int(rewards.numel())
@@ -225,6 +244,18 @@ class EpisodeMetrics:
         # Track QoS success (full satisfaction)
         if qos_mean >= 1.0:
             self.qos_success_count += 1
+
+        if cellfree_metrics:
+            self.mean_soft_qos_sum += float(cellfree_metrics.get("mean_soft_qos", 0.0) or 0.0)
+            self.min_soft_qos_sum += float(cellfree_metrics.get("min_soft_qos", 0.0) or 0.0)
+            self.jain_fairness_sum += float(cellfree_metrics.get("jain_fairness", 0.0) or 0.0)
+            self.min_rate_sum += float(cellfree_metrics.get("min_rate_mbps", 0.0) or 0.0)
+            self.max_rate_sum += float(cellfree_metrics.get("max_rate_mbps", 0.0) or 0.0)
+            self.p5_rate_sum += float(cellfree_metrics.get("rate_p5_mbps", 0.0) or 0.0)
+            self.p95_rate_sum += float(cellfree_metrics.get("rate_p95_mbps", 0.0) or 0.0)
+            self.sinr_db_mean_sum += float(np.mean(cellfree_metrics.get("sinr_db", []) or [0.0]))
+            self.interference_mean_sum += float(cellfree_metrics.get("interference_mean_mw", 0.0) or 0.0)
+            self.ap_load_mean_sum += float(cellfree_metrics.get("ap_load_mean", 0.0) or 0.0)
         
         self.steps += 1
     
@@ -299,6 +330,46 @@ class EpisodeMetrics:
     def grad_norm_avg(self) -> float:
         return self.grad_norm_sum / max(1, self.learning_steps)
 
+    @property
+    def mean_soft_qos(self) -> float:
+        return self.mean_soft_qos_sum / max(1, self.steps)
+
+    @property
+    def min_soft_qos(self) -> float:
+        return self.min_soft_qos_sum / max(1, self.steps)
+
+    @property
+    def jain_fairness(self) -> float:
+        return self.jain_fairness_sum / max(1, self.steps)
+
+    @property
+    def min_rate_mbps(self) -> float:
+        return self.min_rate_sum / max(1, self.steps)
+
+    @property
+    def max_rate_mbps(self) -> float:
+        return self.max_rate_sum / max(1, self.steps)
+
+    @property
+    def rate_p5_mbps(self) -> float:
+        return self.p5_rate_sum / max(1, self.steps)
+
+    @property
+    def rate_p95_mbps(self) -> float:
+        return self.p95_rate_sum / max(1, self.steps)
+
+    @property
+    def sinr_db_mean(self) -> float:
+        return self.sinr_db_mean_sum / max(1, self.steps)
+
+    @property
+    def interference_mean_mw(self) -> float:
+        return self.interference_mean_sum / max(1, self.steps)
+
+    @property
+    def ap_load_mean(self) -> float:
+        return self.ap_load_mean_sum / max(1, self.steps)
+
 
 class MetricsAggregator:
     """Aggregates metrics across all episodes."""
@@ -308,6 +379,11 @@ class MetricsAggregator:
         self.returns: List[float] = []
         self.returns_per_agent_step: List[float] = []
         self.qos_rates: List[float] = []
+        self.soft_qos_means: List[float] = []
+        self.jain_fairness: List[float] = []
+        self.min_rates_mbps: List[float] = []
+        self.p5_rates_mbps: List[float] = []
+        self.p95_rates_mbps: List[float] = []
         
         # Best episode tracking
         self.best_episode: Optional[Dict[str, Any]] = None
@@ -330,6 +406,11 @@ class MetricsAggregator:
         self.returns.append(metrics.return_total)
         self.returns_per_agent_step.append(metrics.return_per_agent_step)
         self.qos_rates.append(metrics.qos_rate)
+        self.soft_qos_means.append(metrics.mean_soft_qos)
+        self.jain_fairness.append(metrics.jain_fairness)
+        self.min_rates_mbps.append(metrics.min_rate_mbps)
+        self.p5_rates_mbps.append(metrics.rate_p5_mbps)
+        self.p95_rates_mbps.append(metrics.rate_p95_mbps)
         
         # Track best episode (by return)
         episode_idx = len(self.returns) - 1
@@ -342,6 +423,9 @@ class MetricsAggregator:
                 "avg_reward": metrics.avg_reward,
                 "qos_rate": metrics.qos_rate,
                 "steps": metrics.steps,
+                "soft_qos": metrics.mean_soft_qos,
+                "jain_fairness": metrics.jain_fairness,
+                "min_rate_mbps": metrics.min_rate_mbps,
             }
         
         # Check for convergence (return stabilization)
@@ -395,6 +479,11 @@ class MetricsAggregator:
             "mean_last_100_return": self.mean_last_k(self.returns, k),
             "mean_last_100_return_per_agent_step": self.mean_last_k(self.returns_per_agent_step, k),
             "mean_last_100_qos": self.mean_last_k(self.qos_rates, k),
+            "mean_last_100_soft_qos": self.mean_last_k(self.soft_qos_means, k),
+            "mean_last_100_jain_fairness": self.mean_last_k(self.jain_fairness, k),
+            "mean_last_100_min_rate_mbps": self.mean_last_k(self.min_rates_mbps, k),
+            "mean_last_100_rate_p5_mbps": self.mean_last_k(self.p5_rates_mbps, k),
+            "mean_last_100_rate_p95_mbps": self.mean_last_k(self.p95_rates_mbps, k),
         }
     
     def get_final_metrics(self, k: int = 100) -> Dict[str, Any]:
@@ -404,10 +493,17 @@ class MetricsAggregator:
             "mean_return": self.mean_last_k(self.returns, k),
             "mean_return_per_agent_step": self.mean_last_k(self.returns_per_agent_step, k),
             "mean_qos": self.mean_last_k(self.qos_rates, k),
+            "mean_soft_qos": self.mean_last_k(self.soft_qos_means, k),
+            "mean_jain_fairness": self.mean_last_k(self.jain_fairness, k),
+            "mean_min_rate_mbps": self.mean_last_k(self.min_rates_mbps, k),
+            "mean_rate_p5_mbps": self.mean_last_k(self.p5_rates_mbps, k),
+            "mean_rate_p95_mbps": self.mean_last_k(self.p95_rates_mbps, k),
             "std_reward": self._std_last_k(self.avg_rewards, k),
             "std_return": self._std_last_k(self.returns, k),
             "std_return_per_agent_step": self._std_last_k(self.returns_per_agent_step, k),
             "std_qos": self._std_last_k(self.qos_rates, k),
+            "std_soft_qos": self._std_last_k(self.soft_qos_means, k),
+            "std_jain_fairness": self._std_last_k(self.jain_fairness, k),
             "max_return": max(self.returns) if self.returns else None,
             "min_return": min(self.returns) if self.returns else None,
         }
@@ -450,6 +546,7 @@ class MetricsAggregator:
             "avg_reward": self.avg_rewards,
             "return": self.returns,
             "qos_rate": self.qos_rates,
+            "return_per_agent_step": self.returns_per_agent_step,
         }
 
 
@@ -483,7 +580,7 @@ class EpisodeRunner:
     
     def reset(self):
         """Initialize state for a new episode."""
-        state_dim = self.config.nagents * 3 if hasattr(self.scenario, "begin_step") else self.config.nagents
+        state_dim = self.config.nagents * 6 if hasattr(self.scenario, "begin_step") else self.config.nagents
         self.ctx = initialize_episode(self.config.nagents, self.device, state_dim=state_dim)
         self.metrics = EpisodeMetrics()
         self.last_actions = [
@@ -527,7 +624,7 @@ class EpisodeRunner:
         
         # Environment step
         t0 = time.perf_counter()
-        self.ctx.rewards, self.ctx.qos, self.ctx.next_state, capacity = (
+        self.ctx.rewards, self.ctx.qos, self.ctx.next_state, capacity, cellfree_step_metrics = (
             compute_rewards_and_next_state(
                 self.agents, self.ctx.actions, self.ctx.state, self.scenario
             )
@@ -536,7 +633,7 @@ class EpisodeRunner:
         
         # Record metrics
         t0 = time.perf_counter()
-        self.metrics.record_step(self.ctx.rewards, self.ctx.qos, capacity)
+        self.metrics.record_step(self.ctx.rewards, self.ctx.qos, capacity, cellfree_step_metrics)
         record_step_metrics_seconds = time.perf_counter() - t0
         
         # Prepare step metrics for logging
@@ -548,6 +645,7 @@ class EpisodeRunner:
             "mean_reward": float(step_stat_vec[0]),
             "qos_mean": float(step_stat_vec[1]),
             "capacity_sum": float(step_stat_vec[2]),
+            "cellfree": cellfree_step_metrics,
             "timing": {
                 "run_step_seconds": time.perf_counter() - step_t0,
                 "gnn_encode_seconds": gnn_encode_seconds,
@@ -739,6 +837,8 @@ class Trainer:
         
         # Set current episode for linear increasing epsilon policy
         self.epsilon_scheduler.set_episode(episode)
+        if hasattr(self.scenario, "set_curriculum_progress"):
+            self.scenario.set_curriculum_progress(episode, self.config.nepisodes)
 
         telecom_plotter_update_seconds = 0.0
         
@@ -762,6 +862,13 @@ class Trainer:
             # Record learning metrics for episode aggregation
             t0 = time.perf_counter()
             self.episode_runner.metrics.record_learning(train_metrics)
+            if train_metrics is not None:
+                self.metrics_aggregator.record_learning_step(
+                    loss=train_metrics.get("loss"),
+                    mean_q=train_metrics.get("mean_q"),
+                    td_error=train_metrics.get("td_error"),
+                    grad_norm=train_metrics.get("grad_norm"),
+                )
             record_learning_seconds = time.perf_counter() - t0
             
             # Step-level logging
@@ -891,15 +998,29 @@ class Trainer:
             target_q_mean=train_metrics.get("target_q_mean", "") if train_metrics else "",
             memory_size=memory_size,
             did_learn=1 if did_learn else 0,
+            mean_soft_qos=step_metrics.get("cellfree", {}).get("mean_soft_qos", ""),
+            min_soft_qos=step_metrics.get("cellfree", {}).get("min_soft_qos", ""),
+            jain_fairness=step_metrics.get("cellfree", {}).get("jain_fairness", ""),
+            min_rate_mbps=step_metrics.get("cellfree", {}).get("min_rate_mbps", ""),
+            max_rate_mbps=step_metrics.get("cellfree", {}).get("max_rate_mbps", ""),
+            rate_p5_mbps=step_metrics.get("cellfree", {}).get("rate_p5_mbps", ""),
+            rate_p95_mbps=step_metrics.get("cellfree", {}).get("rate_p95_mbps", ""),
+            sinr_db_mean=float(np.mean(step_metrics.get("cellfree", {}).get("sinr_db", []) or [0.0])) if step_metrics.get("cellfree") else "",
+            interference_mean_mw=step_metrics.get("cellfree", {}).get("interference_mean_mw", ""),
+            ap_load_mean=step_metrics.get("cellfree", {}).get("ap_load_mean", ""),
         )
         
         if self.config.plot_x_axis == "steps":
+            cf = step_metrics.get("cellfree", {})
             self.plotter.update(
                 step=self.total_steps,
                 epsilon=epsilon,
                 mean_reward=step_metrics["mean_reward"],
                 qos=step_metrics["qos_mean"],
                 capacity_sum_mbps=step_metrics["capacity_sum"],
+                mean_soft_qos=cf.get("mean_soft_qos"),
+                jain_fairness=cf.get("jain_fairness"),
+                min_rate_mbps=cf.get("min_rate_mbps"),
             )
         
         # Update network metrics plotter if learning occurred
@@ -951,6 +1072,16 @@ class Trainer:
             learning_steps=metrics.learning_steps,
             memory_size=memory_size,
             success_rate=metrics.success_rate,
+            mean_soft_qos=metrics.mean_soft_qos,
+            min_soft_qos=metrics.min_soft_qos,
+            jain_fairness=metrics.jain_fairness,
+            min_rate_mbps=metrics.min_rate_mbps,
+            max_rate_mbps=metrics.max_rate_mbps,
+            rate_p5_mbps=metrics.rate_p5_mbps,
+            rate_p95_mbps=metrics.rate_p95_mbps,
+            sinr_db_mean=metrics.sinr_db_mean,
+            interference_mean_mw=metrics.interference_mean_mw,
+            ap_load_mean=metrics.ap_load_mean,
         )
         
         # Console output
@@ -959,7 +1090,8 @@ class Trainer:
             f"Dur: {duration:.2f}s | Return: {metrics.return_total:.3f} | "
             f"Return/Agent/Step: {metrics.return_per_agent_step:.3f} | "
             f"AvgReward: {metrics.avg_reward:.3f} | "
-            f"QoSRate: {metrics.qos_rate:.3f} | Eps: {eps:.4f}"
+            f"QoSRate: {metrics.qos_rate:.3f} | SoftQoS: {metrics.mean_soft_qos:.3f} | "
+            f"Jain: {metrics.jain_fairness:.3f} | Eps: {eps:.4f}"
         )
         
         # Episode-mode plotting
@@ -971,6 +1103,9 @@ class Trainer:
                 qos=metrics.qos_rate,
                 capacity_sum_mbps=metrics.avg_capacity,
                 episode_return=metrics.return_per_agent_step,
+                mean_soft_qos=metrics.mean_soft_qos,
+                jain_fairness=metrics.jain_fairness,
+                min_rate_mbps=metrics.min_rate_mbps,
             )
     
     # Checkpointing removed for performance - uncomment if needed

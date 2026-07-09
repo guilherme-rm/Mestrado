@@ -571,7 +571,8 @@ class TelecomNetworkPlotter:
         vp = self._get_visual_params(len(bs_positions), len(ue_positions))
 
         plt.close("all")
-        fig, ax = plt.subplots(1, 1, figsize=TELECOM_PLOT_FIGSIZE)
+        fig = plt.figure(figsize=TELECOM_PLOT_FIGSIZE)
+        ax = fig.add_axes([0.06, 0.08, 0.62, 0.84])
 
         all_x = [p[0] for p in bs_positions] + [p[0] for p in ue_positions]
         all_y = [p[1] for p in bs_positions] + [p[1] for p in ue_positions]
@@ -608,6 +609,7 @@ class TelecomNetworkPlotter:
         cpu_positions = diagnostics.get("cpu_positions", {})
         cpu_ap_links = diagnostics.get("cpu_ap_links", {})
         cpu_loads = diagnostics.get("cpu_loads", {})
+        step_metrics = diagnostics.get("step_metrics", {}) or {}
 
         cpu_palette = ["#E67E22", "#34495E", "#8E44AD", "#16A085", "#C0392B", "#2980B9"]
 
@@ -786,13 +788,64 @@ class TelecomNetworkPlotter:
         ax.legend(handles=legend_elements, loc="upper right", fontsize=9, framealpha=0.9)
         ax.set_xlabel("X Position (m)", fontsize=11)
         ax.set_ylabel("Y Position (m)", fontsize=11)
+        n_ap = len(bs_positions)
+        n_ue = len(ue_positions)
+        ratio = float(n_ap) / max(1.0, float(n_ue))
+        jain = float(step_metrics.get("jain_fairness", 0.0) or 0.0)
+        mean_soft = float(step_metrics.get("mean_soft_qos", 0.0) or 0.0)
         ax.set_title(
-            f"Cell-Free Topology | Episode {self._current_episode}",
+            f"Cell-Free Topology | Ep {self._current_episode} | L={n_ap}, K={n_ue}, L/K={ratio:.2f}, SoftQoS={mean_soft:.2f}, Jain={jain:.2f}",
             fontsize=13,
             fontweight="bold",
         )
         ax.grid(True, alpha=0.3)
         ax.set_aspect("equal", adjustable="box")
+
+        # Right-side diagnostics panels for Cell-Free realism checks.
+        rates = np.array(step_metrics.get("rates_mbps", []), dtype=np.float64)
+        sinr_db = np.array(step_metrics.get("sinr_db", []), dtype=np.float64)
+        interf = np.array(step_metrics.get("interference_mw", []), dtype=np.float64)
+        cluster_sizes = np.array(step_metrics.get("cluster_size", []), dtype=np.float64)
+        ap_load_vec = np.array(list(ap_loads.values()), dtype=np.float64) if ap_loads else np.zeros(0, dtype=np.float64)
+
+        ax_rate = fig.add_axes([0.72, 0.66, 0.24, 0.25])
+        if rates.size > 0:
+            sorted_rates = np.sort(rates)
+            cdf = np.linspace(0.0, 1.0, sorted_rates.size)
+            ax_rate.plot(sorted_rates, cdf, color="#1f77b4", linewidth=1.8)
+            p5 = float(np.percentile(rates, 5.0))
+            p95 = float(np.percentile(rates, 95.0))
+            ax_rate.axvline(p5, color="#d62728", linestyle="--", linewidth=1.0, label=f"P5={p5:.2f}")
+            ax_rate.axvline(p95, color="#2ca02c", linestyle="--", linewidth=1.0, label=f"P95={p95:.2f}")
+            ax_rate.legend(fontsize=7, loc="lower right")
+        ax_rate.set_title("Rate CDF (Mbps)", fontsize=9)
+        ax_rate.set_xlabel("Rate", fontsize=8)
+        ax_rate.set_ylabel("CDF", fontsize=8)
+        ax_rate.grid(alpha=0.25)
+
+        ax_sinr = fig.add_axes([0.72, 0.37, 0.24, 0.22])
+        if sinr_db.size > 0:
+            ax_sinr.hist(sinr_db, bins=20, alpha=0.65, color="#9467bd", label="SINR (dB)")
+        if interf.size > 0:
+            ax_sinr_2 = ax_sinr.twinx()
+            ax_sinr_2.hist(np.log10(1.0 + interf), bins=20, alpha=0.35, color="#ff7f0e", label="log10(1+I)")
+            ax_sinr_2.set_ylabel("Interference bins", fontsize=8)
+            ax_sinr_2.tick_params(axis="y", labelsize=7)
+        ax_sinr.set_title("SINR / Interference", fontsize=9)
+        ax_sinr.set_xlabel("Value", fontsize=8)
+        ax_sinr.set_ylabel("SINR bins", fontsize=8)
+        ax_sinr.grid(alpha=0.2)
+
+        ax_load = fig.add_axes([0.72, 0.08, 0.24, 0.22])
+        if ap_load_vec.size > 0:
+            ax_load.hist(ap_load_vec, bins=min(16, max(4, int(np.sqrt(ap_load_vec.size)))), alpha=0.7, color="#17becf", label="AP load")
+        if cluster_sizes.size > 0:
+            ax_load.plot(np.sort(cluster_sizes), np.linspace(0.0, 1.0, cluster_sizes.size), color="#bcbd22", linewidth=1.2, label="Cluster size CDF")
+        ax_load.set_title("AP Load / Cluster Size", fontsize=9)
+        ax_load.set_xlabel("Load or Cluster Size", fontsize=8)
+        ax_load.set_ylabel("Count / CDF", fontsize=8)
+        ax_load.legend(fontsize=7, loc="best")
+        ax_load.grid(alpha=0.2)
 
         fig.tight_layout()
         try:

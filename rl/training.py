@@ -49,7 +49,8 @@ def get_flat_state_dim(opt) -> int:
     env_type = str(getattr(opt, "environment_type", "hetnet") or "hetnet").strip().lower()
     nagents = int(getattr(opt, "nagents", 1) or 1)
     if env_type == "cell_free":
-        return nagents * 3
+        # [soft_qos, sinr, ap_load, cluster_size, channel_quality, interference] per UE
+        return nagents * 6
     return nagents
 
 
@@ -70,11 +71,32 @@ def build_next_state(
 ) -> torch.Tensor:
     """Build the flat state representation for the next step."""
     if hasattr(scenario, "begin_step"):
-        required_rate = max(_required_rate_mbps(scenario.sce), 1e-6)
-        capacity_feature = torch.clamp(capacity / required_rate, min=0.0, max=2.0) / 2.0
-        n_actions = max(1, int(scenario.BS_Number()) * int(getattr(scenario.sce, "nChannel", 1) or 1))
-        action_feature = actions.to(device=qos.device, dtype=torch.float32) / float(max(1, n_actions - 1))
-        return torch.cat((qos.to(torch.float32), capacity_feature, action_feature), dim=0)
+        diagnostics = {}
+        if hasattr(scenario, "get_visual_diagnostics"):
+            diagnostics = scenario.get_visual_diagnostics().get("step_metrics", {}) or {}
+
+        n_agents = int(qos.numel())
+
+        def _diag_vec(key: str, default: float = 0.0) -> torch.Tensor:
+            data = diagnostics.get(key)
+            if isinstance(data, list) and len(data) == n_agents:
+                return torch.tensor(data, dtype=torch.float32, device=qos.device)
+            return torch.full((n_agents,), float(default), dtype=torch.float32, device=qos.device)
+
+        soft_qos = _diag_vec("soft_qos", default=0.0)
+        sinr_db = _diag_vec("sinr_db", default=-20.0)
+        # Map SINR dB range [-20, 30] to [0, 1].
+        sinr_norm = torch.clamp((sinr_db + 20.0) / 50.0, min=0.0, max=1.0)
+        ap_load_norm = _diag_vec("primary_ap_load_norm", default=0.0)
+        cluster_size = _diag_vec("cluster_size", default=1.0)
+        cluster_size_norm = torch.clamp(cluster_size / max(1.0, float(getattr(scenario.sce, "max_serving_aps_per_user", getattr(scenario.sce, "serving_aps_per_user", 4) or 4))), min=0.0, max=1.0)
+        beta_vec = _diag_vec("avg_cluster_beta", default=0.0)
+        # Compress large-scale fading to a bounded scale.
+        beta_norm = torch.clamp(torch.log10(torch.clamp(beta_vec, min=1e-16)) / 8.0 + 1.0, min=0.0, max=1.0)
+        interference_vec = _diag_vec("interference_mw", default=0.0)
+        interference_norm = torch.clamp(torch.log10(1.0 + interference_vec) / 6.0, min=0.0, max=1.0)
+
+        return torch.cat((soft_qos, sinr_norm, ap_load_norm, cluster_size_norm, beta_norm, interference_norm), dim=0)
 
     return qos.to(torch.float32).clone()
 
@@ -194,7 +216,10 @@ def compute_rewards_and_next_state(
         rewards[i] = reward_i
         capacity[i] = cap_i
     next_state = build_next_state(qos, capacity, actions, scenario)
-    return rewards, qos, next_state, capacity
+    cellfree_step_metrics = {}
+    if hasattr(scenario, "get_visual_diagnostics"):
+        cellfree_step_metrics = scenario.get_visual_diagnostics().get("step_metrics", {}) or {}
+    return rewards, qos, next_state, capacity, cellfree_step_metrics
 
 
 def store_and_learn(

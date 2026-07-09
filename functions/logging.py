@@ -130,6 +130,16 @@ class EpisodeMetricsLogger:
         "learning_steps",
         "memory_size",
         "success_rate",
+        "mean_soft_qos",
+        "min_soft_qos",
+        "jain_fairness",
+        "min_rate_mbps",
+        "max_rate_mbps",
+        "rate_p5_mbps",
+        "rate_p95_mbps",
+        "sinr_db_mean",
+        "interference_mean_mw",
+        "ap_load_mean",
     ]
 
     def __init__(self, run_dir: RunDirectoryManager):
@@ -177,6 +187,16 @@ class StepMetricsLogger:
         "target_q_mean",
         "memory_size",
         "did_learn",
+        "mean_soft_qos",
+        "min_soft_qos",
+        "jain_fairness",
+        "min_rate_mbps",
+        "max_rate_mbps",
+        "rate_p5_mbps",
+        "rate_p95_mbps",
+        "sinr_db_mean",
+        "interference_mean_mw",
+        "ap_load_mean",
     ]
 
     def __init__(self, run_dir: RunDirectoryManager, throttle: Optional[int] = 1):
@@ -309,6 +329,27 @@ def write_experiment_summary(
     opt_dict = _serialize_config(opt)
     sce_dict = _serialize_config(sce)
     
+    env_type = str(opt_dict.get("environment_type", sce_dict.get("_env", "hetnet")) or "hetnet").lower()
+    if env_type == "cell_free":
+        base_stations = {
+            "macro": 0,
+            "pico": 0,
+            "femto": 0,
+            "ap": int(sce_dict.get("nAP", 0) or 0),
+            "cpu": int(sce_dict.get("nCPU", 0) or 0),
+            "total": int(sce_dict.get("nAP", 0) or 0),
+        }
+    else:
+        n_mbs = int(sce_dict.get("nMBS", 0) or 0)
+        n_pbs = int(sce_dict.get("nPBS", 0) or 0)
+        n_fbs = int(sce_dict.get("nFBS", 0) or 0)
+        base_stations = {
+            "macro": n_mbs,
+            "pico": n_pbs,
+            "femto": n_fbs,
+            "total": n_mbs + n_pbs + n_fbs,
+        }
+
     # Environment snapshot
     env_info = {
         "python_version": platform.python_version(),
@@ -334,12 +375,7 @@ def write_experiment_summary(
         
         # ===== Scenario Configuration =====
         "scenario": {
-            "base_stations": {
-                "macro": sce_dict.get("nMBS", 0),
-                "pico": sce_dict.get("nPBS", 0),
-                "femto": sce_dict.get("nFBS", 0),
-                "total": sce_dict.get("nMBS", 0) + sce_dict.get("nPBS", 0) + sce_dict.get("nFBS", 0),
-            },
+            "base_stations": base_stations,
             "coverage_radii": {
                 "macro_m": sce_dict.get("rMBS"),
                 "pico_m": sce_dict.get("rPBS"),
@@ -397,6 +433,15 @@ def write_experiment_summary(
             "best_episode": best_episode,
             "convergence": convergence_info,
         },
+
+        # Cell-free/telecom diagnostics helpful for literature-style comparison
+        "telecom_metrics": {
+            "final_mean_soft_qos": final_metrics.get("mean_soft_qos") if isinstance(final_metrics, dict) else None,
+            "final_jain_fairness": final_metrics.get("mean_jain_fairness") if isinstance(final_metrics, dict) else None,
+            "final_min_rate_mbps": final_metrics.get("mean_min_rate_mbps") if isinstance(final_metrics, dict) else None,
+            "final_rate_p5_mbps": final_metrics.get("mean_rate_p5_mbps") if isinstance(final_metrics, dict) else None,
+            "final_rate_p95_mbps": final_metrics.get("mean_rate_p95_mbps") if isinstance(final_metrics, dict) else None,
+        },
         
         # ===== Learning Diagnostics =====
         "learning_diagnostics": learning_diagnostics or {},
@@ -448,6 +493,11 @@ def _build_compact_summary(full_summary: Dict[str, Any]) -> Dict[str, Any]:
         "final_avg_return": final.get("mean_return"),
         "final_avg_return_per_agent_step": final.get("mean_return_per_agent_step"),
         "final_qos_rate": final.get("mean_qos"),
+        "final_soft_qos": final.get("mean_soft_qos"),
+        "final_jain_fairness": final.get("mean_jain_fairness"),
+        "final_min_rate_mbps": final.get("mean_min_rate_mbps"),
+        "final_rate_p5_mbps": final.get("mean_rate_p5_mbps"),
+        "final_rate_p95_mbps": final.get("mean_rate_p95_mbps"),
         
         # Best episode
         "best_episode_num": best.get("episode") if best else None,

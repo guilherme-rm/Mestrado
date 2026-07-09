@@ -52,7 +52,7 @@
     "nsteps": "Max steps per episode.",
     "checkpoint_interval": "Save checkpoints every N episodes (0 disables)."
   },
-  "environment_type": "hetnet",
+  "environment_type": "cell_free",
   "fast_mode": false,
   "network_plot_enabled": true,
   "telecom_plot_enabled": true,

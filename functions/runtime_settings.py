@@ -49,7 +49,15 @@ def apply_runtime_settings(opt: Any, sce: Any) -> Dict[str, Any]:
 
     gnn_observation_mode = _get_str(opt, "gnn_observation_mode", constants.GNN_OBSERVATION_MODE)
 
-    environment_type = _get_str(opt, "environment_type", constants.ENVIRONMENT_TYPE).strip().lower()
+    # Resolve environment type: opt > sce._env > constant default
+    _env_type_raw = getattr(opt, "environment_type", None)
+    if _env_type_raw is None:
+        _env_type_raw = getattr(sce, "_env", None)
+    if _env_type_raw is None:
+        _env_type_raw = constants.ENVIRONMENT_TYPE
+    environment_type = str(_env_type_raw).strip().lower()
+    # Write back to opt so that all downstream consumers see the resolved value
+    opt.environment_type = environment_type
 
     mobility_enabled = _get_bool(opt, "mobility_enabled", mobility.MOBILITY_ENABLED)
 
