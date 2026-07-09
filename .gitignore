@@ -63,3 +63,7 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+# Local working folders
+scripts/
+docs/
