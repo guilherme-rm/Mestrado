@@ -36,7 +36,7 @@ class TrainMetrics:
 
 class DQNOptimizer:
     """Handles DQN optimization logic."""
-    
+
     def __init__(self, model_policy, model_target, optimizer, opt, device):
         self.model_policy = model_policy
         self.model_target = model_target
@@ -48,15 +48,15 @@ class DQNOptimizer:
         self._metrics_interval = max(1, int(getattr(opt, "metrics_interval", 1) or 1))
         self._diag_interval = max(1, int(getattr(opt, "diag_interval", 1) or 1))
         self._opt_step = 0
-        
+
         # Store last training metrics
         self._last_metrics: TrainMetrics = TrainMetrics()
-    
+
     @property
     def last_metrics(self) -> TrainMetrics:
         """Get metrics from the last optimization step."""
         return self._last_metrics
-    
+
     def _compute_grad_norm(self) -> float:
         """Compute total gradient norm across all parameters."""
         total_norm = 0.0
@@ -64,16 +64,16 @@ class DQNOptimizer:
             if param.grad is not None:
                 total_norm += param.grad.data.norm(2).item() ** 2
         return total_norm ** 0.5
-    
+
     def optimize(self, memory: Union[ReplayMemory, 'TensorReplayMemory']) -> TrainMetrics:
         """Performs a single optimization step using Double DQN.
-        
+
         Returns:
             TrainMetrics with statistics from this optimization step.
         """
         prev_metrics = self._last_metrics
         self._last_metrics = TrainMetrics()
-        
+
         if len(memory) < self.opt.batch_size:
             return self._last_metrics
 
@@ -175,9 +175,9 @@ class DQNOptimizer:
             td_error=td_error_value,
             did_learn=True,
         )
-        
+
         return self._last_metrics
-    
+
     def soft_update(self, tau: float = 0.005):
         """Performs soft update of the target network parameters."""
         target_state_dict = self.model_target.state_dict()
@@ -187,8 +187,7 @@ class DQNOptimizer:
                 policy_state_dict[key] * tau + target_state_dict[key] * (1.0 - tau)
             )
         self.model_target.load_state_dict(target_state_dict)
-    
+
     def hard_update(self):
         """Performs hard update of target network (full copy) like original UARA-DRL."""
         self.model_target.load_state_dict(self.model_policy.state_dict())
-

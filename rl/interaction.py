@@ -53,4 +53,3 @@ def compute_rewards_and_next_state(
     if hasattr(scenario, "get_visual_diagnostics"):
         cellfree_step_metrics = scenario.get_visual_diagnostics().get("step_metrics", {}) or {}
     return rewards, qos, next_state, capacity, cellfree_step_metrics
-
