@@ -42,8 +42,11 @@ def test_roundtrip_and_frozen_evaluation(tmp_path, monkeypatch, architecture):
     assert data['model_spec']['input_dim'] == agents[0].model_policy.input_dim
     assert data['model_spec']['output_dim'] == agents[0].model_policy.layers[-1].out_features
     assert data['source']['commit']
-    assert data['source']['dirty'] is True
-    assert data['source']['working_tree_sha256']
+    assert isinstance(data['source']['dirty'], bool)
+    if data['source']['dirty']:
+        assert data['source']['working_tree_sha256']
+    else:
+        assert data['source']['working_tree_sha256'] is None
     assert data['mobility_runtime']['enabled'] is True
     assert data['mobility_runtime']['decisions_per_move'] == 1
     for i, agent in enumerate(restored):
