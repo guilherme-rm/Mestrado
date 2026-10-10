@@ -2,6 +2,10 @@
 
 ## How to run
 
+For saving trained HetNet policies and running inference without learning, see
+[Checkpoints and evaluation](CHECKPOINTS.md).
+For the optional richer HetNet policy inputs, see [Enriched observations](ENRICHED_OBSERVATIONS.md).
+
 ### 1) Install dependencies
 Minimal requirements are listed in `requirements.txt`.
 

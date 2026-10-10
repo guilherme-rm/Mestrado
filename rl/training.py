@@ -44,8 +44,13 @@ class TrainingContext:
     qos: torch.Tensor
 
 
-def get_flat_state_dim(opt) -> int:
+def get_flat_state_dim(opt, scenario=None) -> int:
     """Return the flat non-GNN state size for the selected environment."""
+    from .observations import observation_mode, enriched_input_dim
+    if observation_mode(opt) == "enriched":
+        if scenario is None:
+            raise ValueError("Enriched input sizing requires a scenario")
+        return enriched_input_dim(opt, scenario)
     env_type = str(getattr(opt, "environment_type", "hetnet") or "hetnet").strip().lower()
     nagents = int(getattr(opt, "nagents", 1) or 1)
     if env_type == "cell_free":
@@ -379,7 +384,9 @@ def create_agents(
     """
     shared_networks = None
     shared_memory = None
-    flat_state_dim = get_flat_state_dim(opt)
+    flat_state_dim = get_flat_state_dim(opt, scenario)
+    if gnn_input_dim is not None and getattr(opt, "observation_mode", None) == "enriched":
+        raise ValueError("Enriched flat observations cannot be combined with a graph encoder")
     model_input_dim = gnn_input_dim if gnn_input_dim is not None else flat_state_dim
     
     if SHARED_AGENT_NETWORKS:

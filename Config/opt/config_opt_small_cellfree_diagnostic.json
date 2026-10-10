@@ -17,7 +17,7 @@
   "eps_increment": 0.0,
   "eps_start": 1.0,
   "eps_end": 0.05,
-  "eps_decay_steps": 80000,
+  "eps_decay_steps": 50000,
 
   "nepisodes": 2000,
   "nsteps": 100,

@@ -1,0 +1,10 @@
+{
+  "name": "hetnet_fm_baseline",
+  "environment": "hetnet",
+  "scenario": "config_sce_hetnet_medium.json",
+  "optimization": "config_opt_hetnet_medium.json",
+  "model": "flat",
+  "training_seeds": [42, 123, 456],
+  "evaluation_seeds": [1001, 1002, 1003],
+  "evaluation_note": "Evaluation seeds are reserved for a later evaluation-only runner and are not consumed by main.py yet."
+}

@@ -750,6 +750,21 @@ class Agent:
             action_all, action_i, self.location, scenario
         )
 
+    def load_policy_state(self, state_dict: Dict[str, torch.Tensor]):
+        """Load a saved policy model state dict without reinitializing the optimizer."""
+        self.model_policy.load_state_dict(state_dict)
+        self.model_target.load_state_dict(state_dict)
+
+    def set_eval_mode(self):
+        """Set the policy and target networks to evaluation mode for inference-only runs."""
+        self.model_policy.eval()
+        self.model_target.eval()
+
+    def set_train_mode(self):
+        """Set the policy and target networks to training mode for standard updates."""
+        self.model_policy.train()
+        self.model_target.train()
+
     def Save_Transition(self, state, action, next_state, reward, scenario):
         self.memory.Push(
             state.unsqueeze(0),

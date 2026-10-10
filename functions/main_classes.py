@@ -11,7 +11,9 @@ from functions.gpu_manager import GPUManager
 from telecom.environment_factory import create_scenario, resolve_environment_type
 from telecom.mobility import MobilityManager, MOBILITY_ENABLED
 from telecom.interference import compute_interference_graph
+from rl.observations import enriched_observations
 from rl.training import (
+    get_flat_state_dim,
     select_actions,
     compute_rewards_and_next_state,
     store_and_learn,
@@ -31,7 +33,6 @@ from functions.logging import (
     EpisodeMetricsLogger,
     StepMetricsLogger,
     TimeMetricsLogger,
-    checkpoint_agents,
     write_summary,
     write_experiment_summary,
 )
@@ -67,7 +68,7 @@ class TrainingConfig:
     plot_x_axis: str = "episodes"
     early_termination: bool = True
     step_log_throttle: int = DEFAULT_STEP_LOG_THROTTLE  # Higher = faster, less CSV I/O
-    checkpoint_interval: int = 100  # Not used (checkpointing removed)
+    checkpoint_interval: int = 100  # Completed episodes between policy snapshots
     # Epsilon schedule
     eps_start: float = 1.0
     eps_end: float = 0.01
@@ -593,6 +594,7 @@ class EpisodeRunner:
         # GNN observation storage (current and next)
         self._gnn_obs = None
         self._gnn_obs_next = None
+        self._last_capacity = None
     
     def run_step(self, epsilon: float) -> Dict[str, Any]:
         """Execute a single step and return step metrics."""
@@ -607,7 +609,12 @@ class EpisodeRunner:
                 self.agents, 
                 self.ctx.actions if self.step > 0 else None
             )
-            self._gnn_obs = gnn_obs
+        else:
+            gnn_obs = enriched_observations(
+                self.agents, self.scenario, self.ctx.state,
+                self.ctx.actions if self.step > 0 else None, self._last_capacity)
+        # The existing per-agent observation/replay path also handles enriched vectors.
+        self._gnn_obs = gnn_obs
         gnn_encode_seconds = time.perf_counter() - t0
         
         # Select actions (with GNN observations if available)
@@ -629,6 +636,7 @@ class EpisodeRunner:
                 self.agents, self.ctx.actions, self.ctx.state, self.scenario
             )
         )
+        self._last_capacity = capacity
         telecom_update_seconds = time.perf_counter() - t0
         
         # Record metrics
@@ -673,6 +681,11 @@ class EpisodeRunner:
                 self.ctx.actions,  # Use current actions for next state graph
             )
         
+        else:
+            gnn_obs_next = enriched_observations(
+                self.agents, self.scenario, self.ctx.next_state,
+                self.ctx.actions, self._last_capacity)
+
         return store_and_learn(
             self.agents,
             self.ctx.state,
@@ -816,13 +829,36 @@ class Trainer:
     def train(self) -> Dict[str, List[float]]:
         """Run the full training loop."""
         self.start_time = time.time()
-        
+        interval = int(getattr(self.opt, "checkpoint_interval", None) or 0)
+        save_final = getattr(self.opt, "save_final_checkpoint", None)
+        if save_final is None:
+            save_final = self.environment_type == "hetnet"
+        if interval < 0:
+            raise ValueError("checkpoint_interval must be nonnegative")
+        if self.environment_type != "hetnet":
+            if save_final:
+                raise ValueError("Policy checkpoints currently support HetNet only")
+            if interval:
+                print("Policy checkpoints are HetNet-only; ignoring checkpoint_interval for this environment.")
+                interval = 0
+        if self.config.nepisodes < 1:
+            raise ValueError("nepisodes must be positive")
         for episode in range(self.config.nepisodes):
             self._run_episode(episode)
-        
+            if interval and (episode + 1) % interval == 0:
+                self._save_policy_checkpoint(f"episode_{episode + 1:05d}.pt", episode)
+        if save_final:
+            self._save_policy_checkpoint("final.pt", self.config.nepisodes - 1)
         self._finalize()
         return self.metrics_aggregator.to_dict()
     
+    def _save_policy_checkpoint(self, filename, episode):
+        from rl.checkpoints import save_checkpoint
+        path = self.run_dir.subpath("checkpoints") / filename
+        save_checkpoint(path, self.agents, self.scenario, self.opt, self.sce,
+                        self.gnn_manager, episode, self.total_steps)
+        print(f"Saved policy checkpoint: {path}", flush=True)
+
     def _run_episode(self, episode: int):
         """Execute a single training episode."""
         ep_start = time.time()
@@ -842,6 +878,8 @@ class Trainer:
 
         telecom_plotter_update_seconds = 0.0
         
+        move_every = int(getattr(self.opt, "mobility_decisions_per_move", 0) or 0)
+
         while not self.episode_runner.is_done():
             step_t0 = time.perf_counter()
 
@@ -854,6 +892,14 @@ class Trainer:
             run_step_seconds = time.perf_counter() - t0
 
             timing = step_metrics.get("timing", {})
+
+            # Move after the reward so the stored next observation uses the geometry the next action sees.
+            next_step = self.episode_runner.step + 1
+            if (self.mobility_manager is not None and move_every > 0
+                    and next_step % move_every == 0 and next_step < self.config.nsteps):
+                self.mobility_manager.update_episode()
+                for agent in self.agents:
+                    agent.update_location()
 
             t0 = time.perf_counter()
             train_metrics, learn_timing = self.episode_runner.learn(self.opt)
@@ -1108,12 +1154,6 @@ class Trainer:
                 min_rate_mbps=metrics.min_rate_mbps,
             )
     
-    # Checkpointing removed for performance - uncomment if needed
-    # def _should_checkpoint(self, episode: int) -> bool:
-    #     """Determine if a checkpoint should be saved."""
-    #     interval = self.config.checkpoint_interval
-    #     return interval and (episode + 1) % interval == 0
-    
     def _update_telecom_plotter(self, episode: int):
         """Update the telecom network topology plot at end of episode."""
         # Extract current actions as list of integers
@@ -1187,7 +1227,6 @@ class Trainer:
             resource_usage=resource_summary,
         )
         
-        # Checkpointing removed for performance
 
 
 class ExperimentManager:
@@ -1221,7 +1260,7 @@ class ExperimentManager:
         """Delegate batch-size auto-scaling to GPUManager."""
         if self._gpu_manager is None:
             return
-        state_dim = gnn_input_dim if gnn_input_dim else int(self.opt.nagents)
+        state_dim = gnn_input_dim if gnn_input_dim else get_flat_state_dim(self.opt, self.scenario)
         new_bs = self._gpu_manager.auto_scale_batch_size(
             current_batch_size=int(self.opt.batch_size),
             state_dim=state_dim,

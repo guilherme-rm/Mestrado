@@ -55,13 +55,13 @@ def main():
     parser.add_argument(
         "-c1", "--config_sce",
         type=str,
-        required=True,
+        required=False,
         help="Path to scenario config (sce.json)",
     )
     parser.add_argument(
         "-c2", "--config_opt",
         type=str,
-        required=True,
+        required=False,
         help="Path to RL/optimization config (opt.json)",
     )
     parser.add_argument(
@@ -94,7 +94,26 @@ def main():
         action="store_true",
         help="Open lightweight launcher interface instead of running directly",
     )
+    parser.add_argument("--evaluate", metavar="CHECKPOINT", help="Run a saved HetNet policy without learning")
+    parser.add_argument("--eval-episodes", type=int, default=1)
+    parser.add_argument("--eval-steps", type=int, default=None)
+    parser.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--checkpoint-interval", type=int, default=None,
+                        help="Save a policy snapshot every N completed episodes (0 disables periodic saves)")
+    parser.add_argument("--no-final-checkpoint", action="store_true",
+                        help="Disable the default final HetNet policy snapshot")
     args = parser.parse_args()
+    if args.evaluate:
+        if args.config_sce or args.config_opt or args.config_net:
+            parser.error("Evaluation reads configurations from the checkpoint; omit -c1/-c2/-c3")
+        from datetime import datetime
+        from rl.evaluation import evaluate_checkpoint
+        output = args.run_name or "Result/eval_" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        evaluate_checkpoint(args.evaluate, output, args.eval_episodes, args.eval_steps,
+                            args.eval_device, args.seed if args.seed is not None else 42)
+        return 0
+    if not args.ui and (not args.config_sce or not args.config_opt):
+        parser.error("Training requires -c1 and -c2")
 
     if args.ui:
         cmd = [sys.executable, "launch_interface.py"]
@@ -140,6 +159,13 @@ def main():
             print(f"Error parsing network config JSON: {e}")
             return 1
     
+    if args.checkpoint_interval is not None:
+        if args.checkpoint_interval < 0:
+            parser.error("--checkpoint-interval must be nonnegative")
+        opt.checkpoint_interval = args.checkpoint_interval
+    if args.no_final_checkpoint:
+        opt.save_final_checkpoint = False
+
     # Apply runtime settings from config files
     runtime = apply_runtime_settings(opt, sce)
 

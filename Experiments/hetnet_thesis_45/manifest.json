@@ -1,0 +1,377 @@
+{
+  "version": 4,
+  "description": "45 Langevin runs with linear_increasing exploration (increment 0.002), learning rate 0.001 and early termination. 13 distinct configurations x 3 seeds plus 6 same-seed baseline repeats.",
+  "seeds": [
+    42,
+    123,
+    456
+  ],
+  "runs": [
+    {
+      "id": "small_flat_ch30_seed42",
+      "configuration": "small_flat_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_flat_ch30_seed42.json"
+    },
+    {
+      "id": "small_flat_ch30_seed123",
+      "configuration": "small_flat_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_flat_ch30_seed123.json"
+    },
+    {
+      "id": "small_flat_ch30_seed456",
+      "configuration": "small_flat_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_flat_ch30_seed456.json"
+    },
+    {
+      "id": "small_gcn_ch30_seed42",
+      "configuration": "small_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_gcn_ch30_seed42.json"
+    },
+    {
+      "id": "small_gcn_ch30_seed123",
+      "configuration": "small_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_gcn_ch30_seed123.json"
+    },
+    {
+      "id": "small_gcn_ch30_seed456",
+      "configuration": "small_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/small_ch30.json",
+      "options": "options/small_gcn_ch30_seed456.json"
+    },
+    {
+      "id": "medium_flat_ch30_seed42",
+      "configuration": "medium_flat_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_ch30_seed42.json"
+    },
+    {
+      "id": "medium_flat_ch30_seed123",
+      "configuration": "medium_flat_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_ch30_seed123.json"
+    },
+    {
+      "id": "medium_flat_ch30_seed456",
+      "configuration": "medium_flat_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_ch30_seed456.json"
+    },
+    {
+      "id": "medium_gcn_ch30_seed42",
+      "configuration": "medium_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_ch30_seed42.json"
+    },
+    {
+      "id": "medium_gcn_ch30_seed123",
+      "configuration": "medium_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_ch30_seed123.json"
+    },
+    {
+      "id": "medium_gcn_ch30_seed456",
+      "configuration": "medium_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_ch30_seed456.json"
+    },
+    {
+      "id": "large_flat_ch30_seed42",
+      "configuration": "large_flat_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_flat_ch30_seed42.json"
+    },
+    {
+      "id": "large_flat_ch30_seed123",
+      "configuration": "large_flat_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_flat_ch30_seed123.json"
+    },
+    {
+      "id": "large_flat_ch30_seed456",
+      "configuration": "large_flat_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_flat_ch30_seed456.json"
+    },
+    {
+      "id": "large_gcn_ch30_seed42",
+      "configuration": "large_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 42,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_gcn_ch30_seed42.json"
+    },
+    {
+      "id": "large_gcn_ch30_seed123",
+      "configuration": "large_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 123,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_gcn_ch30_seed123.json"
+    },
+    {
+      "id": "large_gcn_ch30_seed456",
+      "configuration": "large_gcn_ch30",
+      "study": "scale_observation",
+      "seed": 456,
+      "scenario": "scenarios/large_ch30.json",
+      "options": "options/large_gcn_ch30_seed456.json"
+    },
+    {
+      "id": "medium_flat_compact_ch30_seed42",
+      "configuration": "medium_flat_compact_ch30",
+      "study": "dnn_size",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_compact_ch30_seed42.json"
+    },
+    {
+      "id": "medium_flat_compact_ch30_seed123",
+      "configuration": "medium_flat_compact_ch30",
+      "study": "dnn_size",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_compact_ch30_seed123.json"
+    },
+    {
+      "id": "medium_flat_compact_ch30_seed456",
+      "configuration": "medium_flat_compact_ch30",
+      "study": "dnn_size",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_compact_ch30_seed456.json"
+    },
+    {
+      "id": "medium_flat_wide_ch30_seed42",
+      "configuration": "medium_flat_wide_ch30",
+      "study": "dnn_size",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_wide_ch30_seed42.json"
+    },
+    {
+      "id": "medium_flat_wide_ch30_seed123",
+      "configuration": "medium_flat_wide_ch30",
+      "study": "dnn_size",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_wide_ch30_seed123.json"
+    },
+    {
+      "id": "medium_flat_wide_ch30_seed456",
+      "configuration": "medium_flat_wide_ch30",
+      "study": "dnn_size",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_wide_ch30_seed456.json"
+    },
+    {
+      "id": "medium_flat_ch10_seed42",
+      "configuration": "medium_flat_ch10",
+      "study": "channels",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_flat_ch10_seed42.json"
+    },
+    {
+      "id": "medium_flat_ch10_seed123",
+      "configuration": "medium_flat_ch10",
+      "study": "channels",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_flat_ch10_seed123.json"
+    },
+    {
+      "id": "medium_flat_ch10_seed456",
+      "configuration": "medium_flat_ch10",
+      "study": "channels",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_flat_ch10_seed456.json"
+    },
+    {
+      "id": "medium_gcn_ch10_seed42",
+      "configuration": "medium_gcn_ch10",
+      "study": "channels",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_gcn_ch10_seed42.json"
+    },
+    {
+      "id": "medium_gcn_ch10_seed123",
+      "configuration": "medium_gcn_ch10",
+      "study": "channels",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_gcn_ch10_seed123.json"
+    },
+    {
+      "id": "medium_gcn_ch10_seed456",
+      "configuration": "medium_gcn_ch10",
+      "study": "channels",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch10.json",
+      "options": "options/medium_gcn_ch10_seed456.json"
+    },
+    {
+      "id": "medium_flat_ch50_seed42",
+      "configuration": "medium_flat_ch50",
+      "study": "channels",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_flat_ch50_seed42.json"
+    },
+    {
+      "id": "medium_flat_ch50_seed123",
+      "configuration": "medium_flat_ch50",
+      "study": "channels",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_flat_ch50_seed123.json"
+    },
+    {
+      "id": "medium_flat_ch50_seed456",
+      "configuration": "medium_flat_ch50",
+      "study": "channels",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_flat_ch50_seed456.json"
+    },
+    {
+      "id": "medium_gcn_ch50_seed42",
+      "configuration": "medium_gcn_ch50",
+      "study": "channels",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_gcn_ch50_seed42.json"
+    },
+    {
+      "id": "medium_gcn_ch50_seed123",
+      "configuration": "medium_gcn_ch50",
+      "study": "channels",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_gcn_ch50_seed123.json"
+    },
+    {
+      "id": "medium_gcn_ch50_seed456",
+      "configuration": "medium_gcn_ch50",
+      "study": "channels",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch50.json",
+      "options": "options/medium_gcn_ch50_seed456.json"
+    },
+    {
+      "id": "medium_gcn_no_interference_ch30_seed42",
+      "configuration": "medium_gcn_no_interference_ch30",
+      "study": "interference_edges",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_no_interference_ch30_seed42.json"
+    },
+    {
+      "id": "medium_gcn_no_interference_ch30_seed123",
+      "configuration": "medium_gcn_no_interference_ch30",
+      "study": "interference_edges",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_no_interference_ch30_seed123.json"
+    },
+    {
+      "id": "medium_gcn_no_interference_ch30_seed456",
+      "configuration": "medium_gcn_no_interference_ch30",
+      "study": "interference_edges",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_gcn_no_interference_ch30_seed456.json"
+    },
+    {
+      "id": "medium_flat_langevin_repeat2_ch30_seed42",
+      "configuration": "medium_flat_langevin_repeat2_ch30",
+      "study": "baseline_repeats",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat2_ch30_seed42.json",
+      "duplicate_of": "medium_flat_ch30_seed42"
+    },
+    {
+      "id": "medium_flat_langevin_repeat2_ch30_seed123",
+      "configuration": "medium_flat_langevin_repeat2_ch30",
+      "study": "baseline_repeats",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat2_ch30_seed123.json",
+      "duplicate_of": "medium_flat_ch30_seed123"
+    },
+    {
+      "id": "medium_flat_langevin_repeat2_ch30_seed456",
+      "configuration": "medium_flat_langevin_repeat2_ch30",
+      "study": "baseline_repeats",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat2_ch30_seed456.json",
+      "duplicate_of": "medium_flat_ch30_seed456"
+    },
+    {
+      "id": "medium_flat_langevin_repeat3_ch30_seed42",
+      "configuration": "medium_flat_langevin_repeat3_ch30",
+      "study": "baseline_repeats",
+      "seed": 42,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat3_ch30_seed42.json",
+      "duplicate_of": "medium_flat_ch30_seed42"
+    },
+    {
+      "id": "medium_flat_langevin_repeat3_ch30_seed123",
+      "configuration": "medium_flat_langevin_repeat3_ch30",
+      "study": "baseline_repeats",
+      "seed": 123,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat3_ch30_seed123.json",
+      "duplicate_of": "medium_flat_ch30_seed123"
+    },
+    {
+      "id": "medium_flat_langevin_repeat3_ch30_seed456",
+      "configuration": "medium_flat_langevin_repeat3_ch30",
+      "study": "baseline_repeats",
+      "seed": 456,
+      "scenario": "scenarios/medium_ch30.json",
+      "options": "options/medium_flat_langevin_repeat3_ch30_seed456.json",
+      "duplicate_of": "medium_flat_ch30_seed456"
+    }
+  ]
+}
