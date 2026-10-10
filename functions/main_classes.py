@@ -12,11 +12,11 @@ from functions.reproducibility import resolve_seeds
 from telecom.environment_factory import create_scenario, resolve_environment_type
 from telecom.mobility import MobilityManager
 from telecom.interference import compute_interference_graph
-from rl.interaction import observations, move_users
+from rl.interaction import EnvironmentInteraction, movement_due
+from rl.metrics import qos_summary
 from rl.training import (
     get_flat_state_dim,
     select_actions,
-    compute_rewards_and_next_state,
     store_and_learn,
     create_agents,
     initialize_episode,
@@ -68,6 +68,7 @@ class EpisodeRunner:
         self.action_tail_len = action_tail_len
         self.state_target = torch.ones(config.nagents, device=device)
         self.gnn_manager = gnn_manager
+        self.interaction = EnvironmentInteraction(agents, scenario, gnn_manager)
         
         # Episode state (reset each episode)
         self.ctx = None
@@ -102,8 +103,8 @@ class EpisodeRunner:
         # Get GNN observations if enabled
         gnn_obs = None
         t0 = time.perf_counter()
-        gnn_obs = observations(self.agents, self.scenario, self.ctx.state, self.gnn_manager,
-                               self.ctx.actions if self.step > 0 else None, self._last_capacity)
+        gnn_obs = self.interaction.observe(
+            self.ctx.state, self.ctx.actions if self.step > 0 else None, self._last_capacity)
         # The existing per-agent observation/replay path also handles enriched vectors.
         self._gnn_obs = gnn_obs
         gnn_encode_seconds = time.perf_counter() - t0
@@ -123,9 +124,7 @@ class EpisodeRunner:
         # Environment step
         t0 = time.perf_counter()
         self.ctx.rewards, self.ctx.qos, self.ctx.next_state, capacity, cellfree_step_metrics = (
-            compute_rewards_and_next_state(
-                self.agents, self.ctx.actions, self.ctx.state, self.scenario
-            )
+            self.interaction.apply_joint_action(self.ctx.actions, self.ctx.state)
         )
         self._last_capacity = capacity
         telecom_update_seconds = time.perf_counter() - t0
@@ -137,13 +136,13 @@ class EpisodeRunner:
         
         # Prepare step metrics for logging
         step_stat_vec = torch.stack(
-            [self.ctx.rewards.mean(), self.ctx.qos.mean(), capacity.sum()]
+            [self.ctx.rewards.mean(), capacity.sum()]
         ).detach().cpu()
 
         step_metrics = {
             "mean_reward": float(step_stat_vec[0]),
-            "qos_mean": float(step_stat_vec[1]),
-            "capacity_sum": float(step_stat_vec[2]),
+            "qos_mean": qos_summary(self.ctx.qos)['qos_fraction'],
+            "capacity_sum": float(step_stat_vec[1]),
             "cellfree": cellfree_step_metrics,
             "timing": {
                 "run_step_seconds": time.perf_counter() - step_t0,
@@ -166,8 +165,8 @@ class EpisodeRunner:
         """
         # Get next GNN observations for storing transitions
         gnn_obs_next = None
-        gnn_obs_next = observations(self.agents, self.scenario, self.ctx.next_state, self.gnn_manager,
-                                    self.ctx.actions, self._last_capacity)
+        gnn_obs_next = self.interaction.observe(
+            self.ctx.next_state, self.ctx.actions, self._last_capacity)
 
         return store_and_learn(
             self.agents,
@@ -184,6 +183,9 @@ class EpisodeRunner:
             optimize=(global_step % self.config.learn_every == 0),
             target_step=global_step if getattr(opt, "target_update_clock", "episode") == "global" else None,
         )
+
+    def move_users(self, mover):
+        self.interaction.move_users(mover)
     
     def advance(self):
         """Transition to next state."""
@@ -383,7 +385,7 @@ class Trainer:
         
         # Update mobility at episode start (positions update, hotspots age/respawn)
         if self.mobility_manager is not None:
-            move_users(self.agents, self.mobility_manager)
+            self.episode_runner.move_users(self.mobility_manager)
         
         # Set current episode for linear increasing epsilon policy
         self.epsilon_scheduler.set_episode(episode)
@@ -409,9 +411,9 @@ class Trainer:
 
             # Move after the reward so the stored next observation uses the geometry the next action sees.
             next_step = self.episode_runner.step + 1
-            if (self.mobility_manager is not None and move_every > 0
-                    and next_step % move_every == 0 and next_step < self.config.nsteps):
-                move_users(self.agents, self.mobility_manager)
+            if (self.mobility_manager is not None
+                    and movement_due(next_step, move_every, self.config.nsteps)):
+                self.episode_runner.move_users(self.mobility_manager)
 
             t0 = time.perf_counter()
             train_metrics, learn_timing = self.episode_runner.learn(self.opt, global_step=self.total_steps)

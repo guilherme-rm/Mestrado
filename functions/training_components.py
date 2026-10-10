@@ -5,6 +5,7 @@ from typing import List, Dict, Optional, Any
 import numpy as np
 import torch
 from constants import DEFAULT_PLOT_INTERVAL, DEFAULT_STEP_LOG_THROTTLE, EPS_MAX_DECAY, EPS_MAX_MIN
+from rl.metrics import qos_summary
 
 @dataclass
 class TrainingConfig:
@@ -175,12 +176,12 @@ class EpisodeMetrics:
             self.num_agents = int(rewards.numel())
 
         stat_vec = torch.stack(
-            [rewards.mean(), rewards.sum(), qos.mean(), capacity.sum()]
+            [rewards.mean(), rewards.sum(), capacity.sum()]
         ).detach().cpu()
         mean_reward = float(stat_vec[0])
         return_total = float(stat_vec[1])
-        qos_mean = float(stat_vec[2])
-        capacity_sum = float(stat_vec[3])
+        qos_mean = qos_summary(qos)['qos_fraction']
+        capacity_sum = float(stat_vec[2])
 
         self.reward_sum += mean_reward
         self.return_total += return_total

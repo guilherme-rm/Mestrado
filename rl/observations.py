@@ -1,6 +1,6 @@
 """Optional per-UE HetNet observations; legacy QoS-only inputs remain the default."""
 import math
-from telecom.radio import path_loss_db
+from telecom.radio import received_power_mw
 import torch
 import torch.nn.functional as F
 
@@ -17,6 +17,29 @@ def enriched_input_dim(opt, scenario):
     if hasattr(scenario, 'begin_step'):
         raise ValueError('Enriched observations currently support HetNet only')
     return int(opt.nagents) + 3 * scenario.BS_Number() + int(scenario.sce.nChannel) + 1
+
+
+def observation_schema(opt, scenario, input_dim, graph=False):
+    """Describe the ordered inputs consumed by a policy network."""
+    mode = observation_mode(opt)
+    if graph:
+        features = [{'name': 'graph_embedding', 'length': int(input_dim),
+                    'encoding': 'learned graph encoder output', 'unit': 'normalized'}]
+    elif mode == 'enriched':
+        n, b, k = int(opt.nagents), scenario.BS_Number(), int(scenario.sce.nChannel)
+        features = [
+            {'name': 'global_qos', 'length': n, 'encoding': 'binary indicators', 'unit': '1'},
+            {'name': 'bs_distance', 'length': b, 'encoding': 'distance / coverage radius; unclipped', 'unit': 'radius ratio'},
+            {'name': 'received_power', 'length': b, 'encoding': 'dBm clipped to [-140, 20], mapped to [0, 1]; zero outside coverage', 'unit': 'normalized'},
+            {'name': 'previous_serving_bs', 'length': b, 'encoding': 'one-hot', 'unit': '1'},
+            {'name': 'previous_channel', 'length': k, 'encoding': 'one-hot', 'unit': '1'},
+            {'name': 'previous_sinr', 'length': 1, 'encoding': 'dB clipped to [-20, 30], mapped to [0, 1]', 'unit': 'normalized'},
+        ]
+    else:
+        features = [{'name': 'global_qos', 'length': int(opt.nagents),
+                     'encoding': 'binary indicators', 'unit': '1'}]
+    return {'version': 2, 'mode': mode, 'graph': bool(graph),
+            'input_dim': int(input_dim), 'features': features}
 
 
 def enriched_observations(agents, scenario, qos, actions=None, capacity=None):
@@ -44,8 +67,8 @@ def enriched_observations(agents, scenario, qos, actions=None, capacity=None):
     radio_distances = distances.clamp_min(1.)
     tx = torch.tensor([b.Transmit_Power_dBm() for b in bs], device=device)
     femto = torch.tensor([b.bs_type == 'FBS' for b in bs], device=device)
-    loss = path_loss_db(radio_distances, femto)
-    rx_dbm = torch.where(radio_distances <= radii, tx - loss, -140.)
+    rx_mw = received_power_mw(radio_distances, tx, radii, femto)
+    rx_dbm = 10. * rx_mw.clamp_min(1e-14).log10()
     power_features = (rx_dbm.clamp(-140., 20.) + 140.) / 160.
     n, k = len(agents), int(scenario.sce.nChannel)
     bs_features = torch.zeros((n, len(bs)), device=device)

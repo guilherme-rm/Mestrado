@@ -8,24 +8,51 @@ import torch
 from .observations import enriched_observations
 
 
+class EnvironmentInteraction:
+    """Shared policy/environment boundary used by training and evaluation."""
+
+    def __init__(self, agents, scenario, manager=None):
+        self.agents = agents
+        self.scenario = scenario
+        self.manager = manager
+
+    def observe(self, state, actions=None, capacity=None):
+        if self.manager is not None and self.manager.enabled:
+            return self.manager.encode(self.agents, actions)
+        return enriched_observations(self.agents, self.scenario, state, actions, capacity)
+
+    @torch.inference_mode()
+    def greedy_actions(self, state, actions=None, capacity=None):
+        obs = self.observe(state, actions, capacity)
+        return torch.stack([agent.model_policy(obs[i] if obs is not None else state).argmax().reshape(())
+                            for i, agent in enumerate(self.agents)])
+
+    def move_users(self, mover):
+        mover.update_episode()
+        for i, agent in enumerate(self.agents):
+            agent.set_location(mover.get_ue_position(i))
+
+    def apply_joint_action(self, actions, state):
+        return compute_rewards_and_next_state(self.agents, actions, state, self.scenario)
+
+
+def movement_due(completed_decisions, cadence, horizon):
+    """Whether to move after a decision while another decision remains."""
+    return cadence > 0 and completed_decisions > 0 and completed_decisions % cadence == 0 and completed_decisions < horizon
+
+
 def observations(agents, scenario, state, manager=None, actions=None, capacity=None):
-    if manager is not None and manager.enabled:
-        return manager.encode(agents, actions)
-    return enriched_observations(agents, scenario, state, actions, capacity)
+    return EnvironmentInteraction(agents, scenario, manager).observe(state, actions, capacity)
 
 
 @torch.inference_mode()
 def greedy_actions(agents, scenario, state, manager=None, actions=None, capacity=None):
-    obs = observations(agents, scenario, state, manager, actions, capacity)
-    return torch.stack([agent.model_policy(obs[i] if obs is not None else state).argmax().reshape(())
-                        for i, agent in enumerate(agents)])
+    return EnvironmentInteraction(agents, scenario, manager).greedy_actions(state, actions, capacity)
 
 
 def move_users(agents, mover):
     """Move once without recalculating allocations or rewards."""
-    mover.update_episode()
-    for i, agent in enumerate(agents):
-        agent.set_location(mover.get_ue_position(i))
+    EnvironmentInteraction(agents, None).move_users(mover)
 
 
 def compute_rewards_and_next_state(

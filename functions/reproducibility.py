@@ -2,6 +2,7 @@
 import random
 import secrets
 import subprocess
+import hashlib
 from pathlib import Path
 import numpy as np
 import torch
@@ -32,7 +33,18 @@ def source_revision():
     try:
         root = Path(__file__).resolve().parents[1]
         revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
-        dirty = bool(subprocess.check_output(['git', 'diff', '--name-only', 'HEAD'], cwd=root, text=True))
-        return {'commit': revision, 'dirty': dirty}
+        status = subprocess.check_output(
+            ['git', 'status', '--porcelain', '--untracked-files=all'], cwd=root, text=True,
+            stderr=subprocess.DEVNULL)
+        digest = hashlib.sha256()
+        for entry in status.splitlines():
+            relative_path = entry[3:]
+            digest.update(entry[:2].encode())
+            digest.update(relative_path.encode())
+            path = root / relative_path
+            if path.is_file():
+                digest.update(path.read_bytes())
+        return {'commit': revision, 'dirty': bool(status),
+                'working_tree_sha256': digest.hexdigest() if status else None}
     except (OSError, subprocess.CalledProcessError):
-        return {'commit': None, 'dirty': None}
+        return {'commit': None, 'dirty': None, 'working_tree_sha256': None}

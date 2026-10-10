@@ -107,6 +107,10 @@ def main():
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--eval-mobility", action="store_true", default=None,
+                        help="Evaluate with mobility (enabled automatically for mobility checkpoints)")
+    parser.add_argument("--eval-mobility-seed", type=int, default=None,
+                        help="Override the checkpoint mobility seed")
     parser.add_argument("--checkpoint-interval", type=int, default=None,
                         help="Save a policy snapshot every N completed episodes (0 disables periodic saves)")
     parser.add_argument("--no-final-checkpoint", action="store_true",
@@ -119,7 +123,8 @@ def main():
         from rl.evaluation import evaluate_checkpoint
         output = args.run_name or "Result/eval_" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         evaluate_checkpoint(args.evaluate, output, args.eval_episodes, args.eval_steps,
-                            args.eval_device, args.seed if args.seed is not None else 42)
+                            args.eval_device, args.seed if args.seed is not None else 42,
+                            mobility=args.eval_mobility, mobility_seed=args.eval_mobility_seed)
         return 0
     if not args.ui and (not args.config_sce or not args.config_opt):
         parser.error("Training requires -c1 and -c2")

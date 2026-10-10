@@ -1,4 +1,5 @@
 """Policy snapshots must preserve inference and never train during evaluation."""
+import json
 import pytest
 import torch
 from dotdic import DotDic
@@ -14,6 +15,8 @@ def test_roundtrip_and_frozen_evaluation(tmp_path, monkeypatch, architecture):
     opt = DotDic(dict(nagents=2, capacity=20, learning_rate=0.001, momentum=0.,
                      batch_size=2, gamma=.9, nupdate=2, nsteps=3,
                      early_termination=False, dnn_hidden_layers=[8, 8],
+                     mobility_enabled=True, mobility_decisions_per_move=1,
+                     mobility_seed=17,
                      gnn_enabled=architecture != 'flat', gnn_conv_type=architecture,
                      gnn_output_dim=8, gnn_hidden_dim=8, gnn_num_layers=2))
     sce = DotDic(dict(nMBS=1, nPBS=1, nFBS=0, nChannel=2, rMBS=200,
@@ -32,6 +35,17 @@ def test_roundtrip_and_frozen_evaluation(tmp_path, monkeypatch, architecture):
     restored, network, encoder, _, _, data = restore_policy(path)
     actual_obs = encoder.encode(restored) if encoder.enabled else obs
     assert data['episode'] == 2
+    assert data['format_version'] == 3
+    assert data['observation_schema']['version'] == 2
+    assert data['observation_schema']['features']
+    assert data['model_spec']['architecture'] == 'mlp'
+    assert data['model_spec']['input_dim'] == agents[0].model_policy.input_dim
+    assert data['model_spec']['output_dim'] == agents[0].model_policy.layers[-1].out_features
+    assert data['source']['commit']
+    assert data['source']['dirty'] is True
+    assert data['source']['working_tree_sha256']
+    assert data['mobility_runtime']['enabled'] is True
+    assert data['mobility_runtime']['decisions_per_move'] == 1
     for i, agent in enumerate(restored):
         assert not agent.model_policy.training
         torch.testing.assert_close(agent.location, agents[i].location)
@@ -46,8 +60,14 @@ def test_roundtrip_and_frozen_evaluation(tmp_path, monkeypatch, architecture):
     for method in ['Save_Transition', 'Optimize_Model', 'Target_Update']:
         monkeypatch.setattr(Agent, method, forbidden)
     monkeypatch.setattr('rl.evaluation.restore_policy', lambda *a: (restored, network, encoder, opt, sce, data))
-    rows = evaluate_checkpoint(path, tmp_path/'eval', episodes=2)
+    rows = evaluate_checkpoint(path, tmp_path/'eval', episodes=2, mobility=False)
     assert [r['steps'] for r in rows] == [3, 3]
+    mobility_rows = evaluate_checkpoint(path, tmp_path/'eval_mobility', steps=3)
+    assert mobility_rows[0]['steps'] == 3
+    mobility_metadata = json.loads((tmp_path/'eval_mobility'/'evaluation.json').read_text())
+    assert mobility_metadata['mobility'] is True
+    assert mobility_metadata['mobility_seed'] == 17
+    assert mobility_metadata['mobility_decisions_per_move'] == 1
     for original, agent in zip(before, restored):
         for key, value in cpu_state(agent.model_policy).items():
             assert torch.equal(value, original[key])
