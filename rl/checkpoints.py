@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import torch
+from functions.reproducibility import source_revision
 
 
 def bare(model):
@@ -19,7 +20,12 @@ def save_checkpoint(path, agents, scenario, opt, sce, gnn_manager, episode, tota
     options['dnn_hidden_layers'] = [layer.out_features for layer in bare(agents[0].model_policy).layers[:-1]]
     options['gnn_enabled'] = bool(gnn_manager and gnn_manager.enabled)
     payload = {
-        'format_version': 1, 'purpose': 'policy_evaluation',
+        'format_version': 2, 'purpose': 'policy_evaluation',
+        'source': source_revision(),
+        'architecture': options.get('architecture', 'mlp'),
+        'observation_schema': {'version': 1, 'mode': options.get('observation_mode', 'qos'),
+                               'graph': bool(gnn_manager and gnn_manager.enabled),
+                               'input_dim': bare(agents[0].model_policy).input_dim},
         'opt': options, 'sce': dict(sce),
         'shared_networks': bool(agents[0].uses_shared_networks),
         'episode': int(episode), 'total_steps': int(total_steps),
@@ -56,8 +62,14 @@ def save_checkpoint(path, agents, scenario, opt, sce, gnn_manager, episode, tota
 def load_checkpoint(path):
     # Only tensors and primitive containers are stored; no arbitrary object loading.
     data = torch.load(path, map_location='cpu', weights_only=True)
-    if data.get('format_version') != 1 or data.get('purpose') != 'policy_evaluation':
+    if data.get('format_version') not in (1, 2) or data.get('purpose') != 'policy_evaluation':
         raise ValueError('Unsupported policy checkpoint format')
+    if data['format_version'] == 2:
+        schema = data.get('observation_schema', {})
+        if schema.get('version') != 1:
+            raise ValueError('Unsupported observation schema')
+        if data.get('architecture') != data['opt'].get('architecture', 'mlp'):
+            raise ValueError('Checkpoint architecture metadata is inconsistent')
     n = data['opt']['nagents']
     if len(data['policies']) != n or len(data['ue_positions']) != n:
         raise ValueError('Checkpoint agent count is inconsistent')

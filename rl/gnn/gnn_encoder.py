@@ -50,6 +50,10 @@ class GNNEncoder(nn.Module):
     ):
         super().__init__()
         
+        if min(input_dim, hidden_dim, output_dim, num_layers) < 1:
+            raise ValueError("Graph dimensions and layer count must be positive")
+        if conv_type in ("gat", "transformer") and num_layers > 1 and hidden_dim % 4:
+            raise ValueError("Graph hidden dimension must be divisible by four attention heads")
         self.num_layers = num_layers
         self.dropout = dropout
         self.use_edge_attr = use_edge_attr

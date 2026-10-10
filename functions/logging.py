@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import time
+import uuid
 from pathlib import Path
 import shutil
 from typing import Any, Dict, Iterable, List, Optional
@@ -35,12 +36,12 @@ class RunDirectoryManager:
                 try:
                     shutil.rmtree(self.path)
                 except OSError as e:
-                    print(f"Warning: Could not overwrite {self.path}: {e}")
+                    raise OSError(f"Could not overwrite {self.path}") from e
             self.path.mkdir(parents=True, exist_ok=True)
         else:
             ts = time.strftime("%Y%m%d-%H%M%S")
-            self.path = Path(root) / f"{prefix}_{ts}"
-            self.path.mkdir(parents=True, exist_ok=True)
+            self.path = Path(root) / f"{prefix}_{ts}_{uuid.uuid4().hex[:8]}"
+            self.path.mkdir(parents=True, exist_ok=False)
 
     def subpath(self, name: str) -> Path:
         p = self.path / name
@@ -58,7 +59,9 @@ def save_config(run_dir: RunDirectoryManager, opt, sce):
 
 
 def save_environment_snapshot(run_dir: RunDirectoryManager):
+    from functions.reproducibility import source_revision
     env = {
+        "source": source_revision(),
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "torch_version": torch.__version__,

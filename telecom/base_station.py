@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+from .radio import received_power_mw
 
 TX_POWER_DBM = {"MBS": 40, "PBS": 30, "FBS": 20}
 
@@ -42,16 +43,7 @@ class BS:
             Received power in milliwatts (linear scale). 0.0 if outside
             coverage radius.
         """
-        d = max(d, 1.0)  # Avoid log10(0)
-        tx_power_dbm = self.transmit_power_dbm()
-        if self.bs_type in ("MBS", "PBS"):
-            loss = 34 + 40 * np.log10(d)
-        else:  # FBS
-            loss = 37 + 30 * np.log10(d)
-        if d <= self.radius:
-            rx_power_dbm = tx_power_dbm - loss
-            return 10 ** (rx_power_dbm / 10)
-        return 0.0
+        return received_power_mw(d, self.transmit_power_dbm(), self.radius, self.bs_type == "FBS")
 
     # ---- Legacy API compatibility (old camelCase method names) ----
     def Get_Location(self):  # noqa: N802

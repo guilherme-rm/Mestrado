@@ -16,7 +16,9 @@ def _get_bool(cfg: Any, key: str, default: bool) -> bool:
     val = getattr(cfg, key, None)
     if val is None:
         return bool(default)
-    return bool(val)
+    if not isinstance(val, bool):
+        raise ValueError(f"{key} must be a JSON boolean")
+    return val
 
 
 def _get_str(cfg: Any, key: str, default: str) -> str:
@@ -27,7 +29,7 @@ def _get_str(cfg: Any, key: str, default: str) -> str:
 
 
 def apply_runtime_settings(opt: Any, sce: Any) -> Dict[str, Any]:
-    """Apply runtime behavior settings from opt/sce config objects.
+    """Resolve runtime behavior settings from opt/sce config objects.
 
     Precedence:
     1) explicit values in opt/sce
@@ -61,23 +63,8 @@ def apply_runtime_settings(opt: Any, sce: Any) -> Dict[str, Any]:
 
     mobility_enabled = _get_bool(opt, "mobility_enabled", mobility.MOBILITY_ENABLED)
 
-    # Apply to shared runtime constants for backward compatibility across modules.
-    constants.FAST_MODE = fast_mode
-    constants.NETWORK_PLOT_ENABLED = network_plot_enabled
-    constants.TELECOM_PLOT_ENABLED = telecom_plot_enabled
-    constants.RESOURCE_PLOT_ENABLED = resource_plot_enabled
-    constants.DEFERRED_PLOTTING = deferred_plotting
-    constants.GNN_ENABLED = gnn_enabled
-    constants.GNN_TRANSFORMER_ENABLED = gnn_transformer_enabled
-    constants.GNN_OBSERVATION_MODE = gnn_observation_mode
-    constants.ENVIRONMENT_TYPE = environment_type
-
-    # Keep legacy derived default coherent.
-    constants.DEFAULT_STEP_LOG_THROTTLE = int(getattr(opt, "step_log_throttle", constants.DEFAULT_STEP_LOG_THROTTLE))
-
-    mobility.MOBILITY_ENABLED = mobility_enabled
-
-    return {
+    resolved = {
+        "enable_plot": enable_plot,
         "fast_mode": fast_mode,
         "network_plot_enabled": network_plot_enabled,
         "telecom_plot_enabled": telecom_plot_enabled,
@@ -89,3 +76,7 @@ def apply_runtime_settings(opt: Any, sce: Any) -> Dict[str, Any]:
         "environment_type": environment_type,
         "mobility_enabled": mobility_enabled,
     }
+
+    for key, value in resolved.items():
+        setattr(opt, key, value)
+    return resolved

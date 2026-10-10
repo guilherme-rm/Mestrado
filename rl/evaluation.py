@@ -8,14 +8,13 @@ import numpy as np
 import torch
 from dotdic import DotDic
 from rl.checkpoints import load_checkpoint, bare
-from rl.observations import enriched_observations
+from rl.interaction import greedy_actions
 
 
 def restore_policy(path, device='cpu'):
     data = load_checkpoint(path)
     from telecom.scenario import Scenario
     from rl.training import create_agents, GNNObservationManager
-    import rl.training as training
     opt, sce = DotDic(data['opt']), DotDic(data['sce'])
     opt.use_amp = False
     opt.multi_gpu_auto = False
@@ -30,17 +29,19 @@ def restore_policy(path, device='cpu'):
         bs.radius = saved['radius']
     # Build graph caches only after restoring geometry.
     manager = GNNObservationManager(scenario, device, enabled=bool(opt.gnn_enabled), opt=opt)
-    old_shared = training.SHARED_AGENT_NETWORKS
-    training.SHARED_AGENT_NETWORKS = data['shared_networks']
-    try:
-        agents = create_agents(opt, sce, scenario, device,
-                               gnn_input_dim=manager.output_dim if manager.enabled else None)
-    finally:
-        training.SHARED_AGENT_NETWORKS = old_shared
+    opt.shared_agent_networks = data['shared_networks']
+    agents = create_agents(opt, sce, scenario, device,
+                           gnn_input_dim=manager.output_dim if manager.enabled else None)
+    if data['format_version'] == 2:
+        schema = data['observation_schema']
+        if schema['input_dim'] != bare(agents[0].model_policy).input_dim:
+            raise ValueError('Checkpoint observation dimension is inconsistent')
+        if schema['mode'] != getattr(opt, 'observation_mode', 'qos') or schema['graph'] != manager.enabled:
+            raise ValueError('Checkpoint observation metadata is inconsistent')
     for agent, weights, position in zip(agents, data['policies'], data['ue_positions']):
         bare(agent.model_policy).load_state_dict(weights, strict=True)
         bare(agent.model_target).load_state_dict(weights, strict=True)
-        agent._location_manager._location = position.to(device).clone()
+        agent.set_location(position)
         agent.set_eval_mode()
         agent.model_policy.requires_grad_(False)
         agent.model_target.requires_grad_(False)
@@ -72,9 +73,7 @@ def evaluate_checkpoint(path, output, episodes=1, steps=None, device='cpu', seed
             previous = None; capacity = None; rewards_sum = qos_sum = 0.; success = False
             started = time.perf_counter()
             for step in range(horizon):
-                obs = manager.encode(agents, previous) if manager.enabled else enriched_observations(agents, scenario, ctx.state, previous, capacity)
-                actions = torch.stack([a.model_policy(obs[i] if obs is not None else ctx.state).argmax().reshape(())
-                                       for i,a in enumerate(agents)])
+                actions = greedy_actions(agents, scenario, ctx.state, manager, previous, capacity)
                 rewards, qos, state, capacity, _ = compute_rewards_and_next_state(agents, actions, ctx.state, scenario)
                 rewards_sum += rewards.mean().item(); qos_sum += qos.mean().item()
                 full = bool(qos.eq(1).all()); success |= full

@@ -31,8 +31,9 @@ def _get(obj, key, default):
     val = getattr(obj, key, None)
     return default if val is None else val
 from .agent import Agent, TrainMetrics, DQNOptimizer
-from .networks import DNN
+from .networks import DNN, build_model
 from .memory import ReplayMemory
+from .interaction import compute_rewards_and_next_state
 
 
 @dataclass
@@ -201,31 +202,6 @@ def select_actions(
         return actions
 
 
-def compute_rewards_and_next_state(
-    agents: Sequence[Agent], actions: torch.Tensor, state: torch.Tensor, scenario
-):
-    nagents = len(agents)
-    if hasattr(scenario, "set_current_ue_positions"):
-        scenario.set_current_ue_positions([
-            ag.location.detach().cpu().numpy() if isinstance(ag.location, torch.Tensor) else ag.location
-            for ag in agents
-        ])
-    if hasattr(scenario, "begin_step"):
-        scenario.begin_step()
-    rewards = torch.zeros(nagents, device=state.device)
-    qos = torch.zeros(nagents, device=state.device)
-    capacity = torch.zeros(nagents, device=state.device)
-    for i, ag in enumerate(agents):
-        qos_i, reward_i, cap_i = ag.Get_Reward(actions, actions[i], state, scenario)
-        qos[i] = qos_i
-        rewards[i] = reward_i
-        capacity[i] = cap_i
-    next_state = build_next_state(qos, capacity, actions, scenario)
-    cellfree_step_metrics = {}
-    if hasattr(scenario, "get_visual_diagnostics"):
-        cellfree_step_metrics = scenario.get_visual_diagnostics().get("step_metrics", {}) or {}
-    return rewards, qos, next_state, capacity, cellfree_step_metrics
-
 
 def store_and_learn(
     agents: Sequence[Agent],
@@ -238,6 +214,9 @@ def store_and_learn(
     opt,
     gnn_obs: Optional[Dict[int, torch.Tensor]] = None,
     gnn_obs_next: Optional[Dict[int, torch.Tensor]] = None,
+    terminated: bool = False,
+    optimize: bool = True,
+    target_step: Optional[int] = None,
 ) -> tuple[Optional[Dict[str, float]], Dict[str, float]]:
     """Store transitions and perform learning step.
     
@@ -289,35 +268,23 @@ def store_and_learn(
             agent_next_state = next_state
         
         t0 = time.perf_counter()
-        ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario)
+        ag.Save_Transition(agent_state, actions[i], agent_next_state, rewards[i], scenario, terminated=terminated)
         store_transition_seconds += time.perf_counter() - t0
 
-        if uses_shared:
-            # With shared networks: only optimize once (on first agent)
-            # All agents share the same network, so one update is enough
-            if i == 0:
-                t0 = time.perf_counter()
-                metrics = ag.Optimize_Model()
-                optimize_seconds += time.perf_counter() - t0
-                if metrics.did_learn:
-                    all_metrics.append(metrics)
-                # Hard target update (only once since networks are shared)
-                if step_idx % nupdate == 0:
-                    t0 = time.perf_counter()
-                    ag.Target_Update()
-                    target_update_seconds += time.perf_counter() - t0
-        else:
-            # Independent networks: optimize each agent separately
+        # Shared replay must contain every agent's transition before its update.
+        if uses_shared and i != len(agents) - 1:
+            continue
+        if optimize:
             t0 = time.perf_counter()
             metrics = ag.Optimize_Model()
             optimize_seconds += time.perf_counter() - t0
             if metrics.did_learn:
                 all_metrics.append(metrics)
-            # Hard target update every nupdate steps (like original UARA-DRL)
-            if step_idx % nupdate == 0:
-                t0 = time.perf_counter()
-                ag.Target_Update()
-                target_update_seconds += time.perf_counter() - t0
+        # Target synchronization uses its own clock, even on non-learning steps.
+        if (step_idx if target_step is None else target_step) % nupdate == 0:
+            t0 = time.perf_counter()
+            ag.Target_Update()
+            target_update_seconds += time.perf_counter() - t0
 
     timing = {
         "store_and_learn_total_seconds": time.perf_counter() - t_total,
@@ -389,14 +356,14 @@ def create_agents(
         raise ValueError("Enriched flat observations cannot be combined with a graph encoder")
     model_input_dim = gnn_input_dim if gnn_input_dim is not None else flat_state_dim
     
-    if SHARED_AGENT_NETWORKS:
+    if _get(opt, "shared_agent_networks", SHARED_AGENT_NETWORKS):
         # Create single shared network for all agents
-        model_policy = DNN(opt, sce, scenario, input_dim=model_input_dim).to(device)
-        model_target = DNN(opt, sce, scenario, input_dim=model_input_dim).to(device)
+        model_policy = build_model(opt, sce, scenario, input_dim=model_input_dim).to(device)
+        model_target = build_model(opt, sce, scenario, input_dim=model_input_dim).to(device)
         model_target.load_state_dict(model_policy.state_dict())
         model_target.eval()
         
-        momentum = opt.momentum if opt.momentum is not None else 0.0
+        momentum = _get(opt, "momentum", 0.0)
         optimizer = optim.RMSprop(
             params=model_policy.parameters(),
             lr=opt.learning_rate,
@@ -410,7 +377,7 @@ def create_agents(
         # Create single shared replay buffer - larger capacity since all agents contribute
         # Use nagents * original_capacity to maintain similar per-agent experience storage
         shared_capacity = opt.capacity * opt.nagents
-        shared_memory = ReplayMemory(shared_capacity)
+        shared_memory = ReplayMemory(shared_capacity, sampling=_get(opt, "replay_sampling", "legacy"))
     
     return [
         Agent(
@@ -490,6 +457,7 @@ class GNNObservationManager:
             heterogeneous=_get(o, "gnn_heterogeneous", GNN_HETEROGENEOUS),
             conv_type=conv_type,
         )
+        self._encoder.requires_grad_(False)
     
     @property
     def enabled(self) -> bool:

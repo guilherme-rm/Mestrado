@@ -1,37 +1,13 @@
-"""Reinforcement learning package.
+"""Lazy public exports; importing utilities does not load training or plotting."""
+from importlib import import_module
 
-Includes neural network architectures, replay memory, agent logic,
-and GNN-based feature extraction (using PyTorch Geometric).
+_EXPORTS = {'Transition': 'memory', 'ReplayMemory': 'memory', 'DNN': 'networks', 'Agent': 'agent', 'GNNObservationEncoder': 'gnn', 'WirelessGraphBuilder': 'gnn', 'WirelessGraph': 'gnn', 'GNNEncoder': 'gnn', 'EdgeConditionedGNN': 'gnn'}
+__all__ = list(_EXPORTS)
 
-Public API shortcuts:
-    from rl.networks import DNN
-    from rl.memory import Transition, ReplayMemory
-    from rl.agent import Agent
-    from rl.gnn import GNNObservationEncoder, WirelessGraphBuilder
-"""
 
-from .memory import Transition, ReplayMemory  # noqa: F401
-from .networks import DNN  # noqa: F401
-from .agent import Agent  # noqa: F401
-
-# GNN exports (using PyTorch Geometric)
-from .gnn import (  # noqa: F401
-    GNNObservationEncoder,
-    WirelessGraphBuilder,
-    WirelessGraph,
-    GNNEncoder,
-    EdgeConditionedGNN,
-)
-
-__all__ = [
-    "Transition",
-    "ReplayMemory",
-    "DNN",
-    "Agent",
-    # GNN components
-    "GNNObservationEncoder",
-    "WirelessGraphBuilder",
-    "WirelessGraph",
-    "GNNEncoder",
-    "EdgeConditionedGNN",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(f"{__name__}.{_EXPORTS[name]}"), name)
+    globals()[name] = value
+    return value

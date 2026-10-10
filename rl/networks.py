@@ -46,3 +46,10 @@ class DNN(nn.Module):
 
 
 __all__ = ["DNN"]
+
+
+def build_model(opt, sce, scenario, input_dim=None):
+    architecture = getattr(opt, 'architecture', 'mlp')
+    if architecture != 'mlp':
+        raise ValueError(f'Unsupported action-value architecture: {architecture}')
+    return DNN(opt, sce, scenario, input_dim=input_dim)

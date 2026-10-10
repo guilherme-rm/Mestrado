@@ -106,7 +106,7 @@ def get_vram_mb(device: Optional[torch.device] = None) -> float:
             return float(info.used) / (1024 * 1024)
         except Exception:
             pass
-    return torch.cuda.memory_allocated() / (1024 * 1024)
+    return torch.cuda.memory_allocated(device) / (1024 * 1024)
 
 
 def get_total_vram_mb(device_index: int = 0) -> float:
@@ -225,6 +225,7 @@ class GPUManager:
     def __init__(
         self,
         *,
+        device: Optional[str] = None,
         multi_gpu_auto: bool = True,
         multi_gpu_min_memory_gb: float = 8.0,
         use_amp: bool = True,
@@ -234,6 +235,7 @@ class GPUManager:
         batch_size_max: int = 4096,
         batch_size_grad_overhead: float = 5.0,
     ):
+        self._requested_device = device
         self._multi_gpu_auto = multi_gpu_auto
         self._multi_gpu_min_memory_gb = multi_gpu_min_memory_gb
         self._use_amp_cfg = use_amp
@@ -262,7 +264,15 @@ class GPUManager:
             v = getattr(opt, name, None)
             return default if v is None else v
 
+        requested = _g("device", None)
+        legacy_cuda = _g("cuda", None)
+        if requested is None and legacy_cuda is not None:
+            requested = "cpu" if int(legacy_cuda) < 0 else f"cuda:{int(legacy_cuda)}"
+            # Legacy cuda=0 configs were portable to CPU-only hosts.
+            if int(legacy_cuda) >= 0 and not torch.cuda.is_available():
+                requested = "cpu"
         return cls(
+            device=requested,
             multi_gpu_auto=bool(_g("multi_gpu_auto", True)),
             multi_gpu_min_memory_gb=float(_g("multi_gpu_min_memory_gb", 8.0)),
             use_amp=bool(_g("use_amp", True)),
@@ -289,6 +299,16 @@ class GPUManager:
 
     def _select_devices(self) -> DevicePlan:
         """Determine which device(s) to use and return a DevicePlan."""
+        if self._requested_device is not None and self._requested_device != "auto":
+            device = torch.device(self._requested_device)
+            if device.type not in ("cpu", "cuda"):
+                raise ValueError("device must be cpu, cuda:N, or auto")
+            if device.type == "cuda":
+                index = device.index if device.index is not None else 0
+                if not torch.cuda.is_available() or index >= torch.cuda.device_count():
+                    raise ValueError(f"Requested CUDA device is unavailable: {device}")
+                device = torch.device("cuda", index)
+            return DevicePlan(device=device)
         if not torch.cuda.is_available():
             print("GPUManager: CPU (CUDA not available)")
             return DevicePlan(device=torch.device("cpu"))

@@ -1,5 +1,6 @@
 """Optional per-UE HetNet observations; legacy QoS-only inputs remain the default."""
 import math
+from telecom.radio import path_loss_db
 import torch
 import torch.nn.functional as F
 
@@ -43,8 +44,7 @@ def enriched_observations(agents, scenario, qos, actions=None, capacity=None):
     radio_distances = distances.clamp_min(1.)
     tx = torch.tensor([b.Transmit_Power_dBm() for b in bs], device=device)
     femto = torch.tensor([b.bs_type == 'FBS' for b in bs], device=device)
-    loss = torch.where(femto, 37. + 30. * radio_distances.log10(),
-                       34. + 40. * radio_distances.log10())
+    loss = path_loss_db(radio_distances, femto)
     rx_dbm = torch.where(radio_distances <= radii, tx - loss, -140.)
     power_features = (rx_dbm.clamp(-140., 20.) + 140.) / 160.
     n, k = len(agents), int(scenario.sce.nChannel)

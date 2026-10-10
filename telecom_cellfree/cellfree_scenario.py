@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Hashable, List, Optional, Sequence, Tuple
 import numpy as np
+from functions.configuration import config_value
 
 from .access_point import AccessPoint
 from .cpu import CPU
@@ -68,7 +69,7 @@ class CellFreeScenarioConfig:
             target_nagents=target_nagents,
             min_nagents=min_nagents,
             max_nagents=max_nagents,
-            interference_scale=float(getattr(sce, "interference_scale", 0.25) or 0.25),
+            interference_scale=float(config_value(sce, 'interference_scale', 0.25)),
             curriculum_enabled=bool(getattr(sce, "curriculum_enabled", True)),
             curriculum_min_rate_factor_start=float(getattr(sce, "curriculum_min_rate_factor_start", 0.6) or 0.6),
             curriculum_interference_scale_start=float(getattr(sce, "curriculum_interference_scale_start", 0.5) or 0.5),

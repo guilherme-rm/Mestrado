@@ -40,7 +40,7 @@ def create_scenario(sce: Any, opt: Any = None):
 
     from telecom.scenario import Scenario
 
-    return Scenario(sce)
+    return Scenario(sce, seed=getattr(opt, "layout_seed", None))
 
 
 def create_reward_calculator(

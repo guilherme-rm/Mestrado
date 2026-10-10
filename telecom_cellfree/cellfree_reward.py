@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Set, Tuple
 import numpy as np
+from functions.configuration import config_value
 import torch
 
 from .association_manager import UserCentricAssociationManager
@@ -27,13 +28,17 @@ class CellFreeRewardCalculator:
         action_i: torch.Tensor,
         agent_location: torch.Tensor,
         scenario,
+        ue_index=None,
     ) -> Tuple[int, torch.Tensor, torch.Tensor]:
         step_id = int(scenario.step_id()) if hasattr(scenario, "step_id") else -1
-        if self._last_step_id != step_id:
-            self._step_cache = self._compute_step_snapshot(action_all, scenario)
-            self._last_step_id = step_id
+        cached = getattr(scenario, "_reward_snapshot", None)
+        if cached is None or cached[0] != step_id:
+            cached = (step_id, self._compute_step_snapshot(action_all, scenario))
+            scenario._reward_snapshot = cached
+        self._step_cache = cached[1]
+        self._last_step_id = step_id
 
-        ue_idx = self._infer_ue_index(agent_location, scenario)
+        ue_idx = self._infer_ue_index(agent_location, scenario) if ue_index is None else ue_index
         if ue_idx < 0:
             return self._invalid(scenario)
 
@@ -50,7 +55,7 @@ class CellFreeRewardCalculator:
         )
 
     def _invalid(self, scenario):
-        negative = float(getattr(self.sce, "negative_cost", -0.5) or -0.5)
+        negative = float(config_value(self.sce, 'negative_cost', -0.5))
         return (
             0,
             torch.tensor(negative, device=self.device, dtype=torch.float32),
@@ -76,10 +81,10 @@ class CellFreeRewardCalculator:
         min_required_rate = self._required_rate_mbps(scenario)
         assoc_manager = UserCentricAssociationManager(
             getattr(scenario.cfg, "serving_aps_per_user", getattr(self.sce, "serving_aps_per_user", 4)),
-            strategy=str(getattr(self.sce, "cluster_assignment_mode", "hybrid") or "hybrid"),
-            distance_weight=float(getattr(self.sce, "cluster_distance_weight", 0.6) or 0.6),
-            gain_weight=float(getattr(self.sce, "cluster_gain_weight", 0.35) or 0.35),
-            load_weight=float(getattr(self.sce, "cluster_load_weight", 0.05) or 0.05),
+            strategy=str(config_value(self.sce, 'cluster_assignment_mode', "hybrid")),
+            distance_weight=float(config_value(self.sce, 'cluster_distance_weight', 0.6)),
+            gain_weight=float(config_value(self.sce, 'cluster_gain_weight', 0.35)),
+            load_weight=float(config_value(self.sce, 'cluster_load_weight', 0.05)),
             dynamic_size=bool(getattr(self.sce, "dynamic_cluster_sizing", False)),
             min_cluster_size=int(getattr(self.sce, "min_serving_aps_per_user", getattr(self.sce, "serving_aps_per_user", 4)) or 1),
             max_cluster_size=int(getattr(self.sce, "max_serving_aps_per_user", getattr(self.sce, "serving_aps_per_user", 4)) or 1),
@@ -121,7 +126,7 @@ class CellFreeRewardCalculator:
         effective_interference_scale = (
             float(scenario.get_effective_interference_scale())
             if hasattr(scenario, "get_effective_interference_scale")
-            else float(getattr(self.sce, "interference_scale", 0.25) or 0.25)
+            else float(config_value(self.sce, 'interference_scale', 0.25))
         )
 
         signal = np.zeros(n_users, dtype=np.float64)
@@ -320,13 +325,13 @@ class CellFreeRewardCalculator:
         qos_violation_ratio: float,
         active_mask: np.ndarray,
     ) -> np.ndarray:
-        alpha = float(getattr(self.sce, "reward_alpha_soft_qos", 0.45) or 0.45)
-        beta = float(getattr(self.sce, "reward_beta_min_soft_qos", 0.25) or 0.25)
-        gamma = float(getattr(self.sce, "reward_gamma_fairness", 0.2) or 0.2)
-        delta = float(getattr(self.sce, "reward_delta_avg_rate", 0.15) or 0.15)
-        eta = float(getattr(self.sce, "reward_eta_power", 0.08) or 0.08)
-        lambda_qos = float(getattr(self.sce, "reward_lambda_qos_violation", 0.25) or 0.25)
-        indiv = float(getattr(self.sce, "reward_individual_soft_qos", 0.2) or 0.2)
+        alpha = float(config_value(self.sce, 'reward_alpha_soft_qos', 0.45))
+        beta = float(config_value(self.sce, 'reward_beta_min_soft_qos', 0.25))
+        gamma = float(config_value(self.sce, 'reward_gamma_fairness', 0.2))
+        delta = float(config_value(self.sce, 'reward_delta_avg_rate', 0.15))
+        eta = float(config_value(self.sce, 'reward_eta_power', 0.08))
+        lambda_qos = float(config_value(self.sce, 'reward_lambda_qos_violation', 0.25))
+        indiv = float(config_value(self.sce, 'reward_individual_soft_qos', 0.2))
 
         avg_rate_norm = avg_rate / max(min_required_rate, 1e-6)
         global_term = (
@@ -345,8 +350,8 @@ class CellFreeRewardCalculator:
 
         reward = global_term + indiv * individual_term
 
-        norm_scale = float(getattr(self.sce, "reward_norm_scale", 1.0) or 1.0)
-        clip_abs = float(getattr(self.sce, "reward_clip_abs", 3.0) or 3.0)
+        norm_scale = float(config_value(self.sce, 'reward_norm_scale', 1.0))
+        clip_abs = float(config_value(self.sce, 'reward_clip_abs', 3.0))
         reward = reward / max(1e-6, norm_scale)
         reward = np.clip(reward, -clip_abs, clip_abs)
         return reward.astype(np.float64)

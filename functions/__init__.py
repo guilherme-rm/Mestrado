@@ -1,35 +1,13 @@
-"""General utility functions and helpers (plotting, etc.).
+"""Lazy public exports; importing utilities does not load training or plotting."""
+from importlib import import_module
 
-Public API:
-    from functions.live_plot import RealTimeStepPlotter
-    from functions.telecom_network_plot import TelecomNetworkPlotter
-    from functions.resource_metrics_plot import ResourceMetricsPlotter
-"""
+_EXPORTS = {'RealTimeStepPlotter': 'live_plot', 'TelecomNetworkPlotter': 'telecom_network_plot', 'NetworkMetricsPlotter': 'network_metrics_plot', 'ResourceMetricsPlotter': 'resource_metrics_plot', 'RunDirectoryManager': 'logging', 'save_config': 'logging', 'save_environment_snapshot': 'logging', 'EpisodeMetricsLogger': 'logging', 'StepMetricsLogger': 'logging', 'checkpoint_agents': 'logging', 'write_summary': 'logging', 'write_experiment_summary': 'logging'}
+__all__ = list(_EXPORTS)
 
-from .live_plot import RealTimeStepPlotter  # noqa: F401
-from .telecom_network_plot import TelecomNetworkPlotter  # noqa: F401
-from .network_metrics_plot import NetworkMetricsPlotter  # noqa: F401
-from .resource_metrics_plot import ResourceMetricsPlotter  # noqa: F401
-from .logging import (  # noqa: F401
-    RunDirectoryManager,
-    save_config,
-    save_environment_snapshot,
-    EpisodeMetricsLogger,
-    StepMetricsLogger,
-    checkpoint_agents,
-    write_summary,
-    write_experiment_summary,
-)
 
-__all__ = [
-    "RealTimeStepPlotter",
-    "TelecomNetworkPlotter",
-    "RunDirectoryManager",
-    "save_config",
-    "save_environment_snapshot",
-    "EpisodeMetricsLogger",
-    "StepMetricsLogger",
-    "checkpoint_agents",
-    "write_summary",
-    "write_experiment_summary",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(f"{__name__}.{_EXPORTS[name]}"), name)
+    globals()[name] = value
+    return value

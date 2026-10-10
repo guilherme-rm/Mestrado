@@ -51,6 +51,12 @@ class GNNObservationEncoder(nn.Module):
     ):
         super().__init__()
         
+        if mode != "replace":
+            raise ValueError("Only gnn_observation_mode='replace' is implemented")
+        if heterogeneous:
+            raise ValueError("Heterogeneous graph encoding is not implemented")
+        if use_attention and conv_type not in ("gcn", "gat"):
+            raise ValueError("gnn_use_attention conflicts with the selected convolution")
         self.device = device
         self.mode = mode
         self.gnn_output_dim = gnn_output_dim
