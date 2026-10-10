@@ -89,6 +89,9 @@ class MobilityManager:
         scenario: Scenario,
         num_ues: int,
         seed: Optional[int] = None,
+        enabled: Optional[bool] = None,
+        speed: Optional[float] = None,
+        hotspots_enabled: Optional[bool] = None,
     ):
         """Initialize mobility manager.
         
@@ -97,6 +100,11 @@ class MobilityManager:
             num_ues: Number of UEs to manage
             seed: Random seed for reproducibility (None = random)
         """
+        self.enabled = MOBILITY_ENABLED if enabled is None else enabled
+        self.speed = UE_SPEED if speed is None else float(speed)
+        self.hotspots_enabled = HOTSPOT_ENABLED if hotspots_enabled is None else hotspots_enabled
+        if self.speed < 0 or not np.isfinite(self.speed):
+            raise ValueError("Mobility speed must be nonnegative and finite")
         self.scenario = scenario
         self.num_ues = num_ues
         self.seed = seed if seed is not None else MOBILITY_SEED
@@ -110,7 +118,7 @@ class MobilityManager:
         
         # Initialize hotspots
         self.hotspots: List[Hotspot] = []
-        if HOTSPOT_ENABLED:
+        if self.hotspots_enabled:
             self._initialize_hotspots()
         
         # Initialize UE states
@@ -237,7 +245,7 @@ class MobilityManager:
     def _pick_destination(self, ue_state: UEMobilityState) -> np.ndarray:
         """Pick next destination for a UE (hotspot-biased RWM)."""
         # Decide if attracted to hotspot
-        if (HOTSPOT_ENABLED 
+        if (self.hotspots_enabled
             and self.hotspots 
             and self.rng.random() < HOTSPOT_ATTRACTION_PROBABILITY):
             # Pick hotspot-based destination
@@ -264,7 +272,7 @@ class MobilityManager:
         if not ue_state.has_destination():
             ue_state.destination = self._pick_destination(ue_state)
         
-        if ue_state.at_destination(threshold=UE_SPEED):
+        if ue_state.at_destination(threshold=self.speed):
             # Arrived at destination
             ue_state.position = ue_state.destination.copy()
             ue_state.destination = None
@@ -277,7 +285,7 @@ class MobilityManager:
         
         if distance > 0:
             direction = direction / distance
-            step = min(UE_SPEED, distance)
+            step = min(self.speed, distance)
             new_pos = ue_state.position + direction * step
             
             # Verify still in coverage
@@ -295,13 +303,13 @@ class MobilityManager:
         - Move hotspots
         - Move UEs toward their destinations
         """
-        if not MOBILITY_ENABLED:
+        if not self.enabled:
             return
         
         self.current_episode += 1
         
         # Update hotspots first
-        if HOTSPOT_ENABLED:
+        if self.hotspots_enabled:
             self._update_hotspots()
         
         # Move each UE
@@ -344,7 +352,7 @@ class MobilityManager:
         
         self.current_episode = 0
         self.hotspots = []
-        if HOTSPOT_ENABLED:
+        if self.hotspots_enabled:
             self._initialize_hotspots()
         self._initialize_ue_states()
 

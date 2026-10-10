@@ -1,0 +1,11 @@
+# Tested direct dependency versions; install a matching PyTorch wheel for your device.
+torch==2.2.1
+torch-geometric==2.5.1
+numpy==1.26.4
+matplotlib==3.8.3
+pytest==8.4.2
+psutil==5.9.8
+pandas==2.2.2
+pyyaml==6.0.1
+nvidia-ml-py==13.595.45
+pillow==10.2.0

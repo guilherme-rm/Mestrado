@@ -6,7 +6,7 @@ import torch
 from dotdic import DotDic
 from telecom.scenario import Scenario
 from rl.training import create_agents, get_flat_state_dim
-from rl.observations import enriched_observations
+from rl.observations import enriched_observations, observation_schema
 from rl.checkpoints import save_checkpoint
 from rl.evaluation import restore_policy, evaluate_checkpoint
 from functions.main_classes import EpisodeRunner, TrainingConfig
@@ -39,6 +39,11 @@ def test_features_geometry_radio_feedback_and_legacy():
     agents[0]._location_manager._location = torch.tensor(b.Get_Location(), dtype=torch.float32) + torch.tensor([10., 0.])
     obs = enriched_observations(agents, scenario, qos)
     assert get_flat_state_dim(opt, scenario) == 119
+    schema = observation_schema(opt, scenario, get_flat_state_dim(opt, scenario))
+    assert [feature['name'] for feature in schema['features']] == [
+        'global_qos', 'bs_distance', 'received_power', 'previous_serving_bs',
+        'previous_channel', 'previous_sinr']
+    assert sum(feature['length'] for feature in schema['features']) == schema['input_dim']
     assert all(x.shape == (119,) and torch.isfinite(x).all() for x in obs.values())
     torch.testing.assert_close(obs[0][:10], qos.float())
     assert obs[0][10].item() == pytest.approx(10/b.radius, abs=1e-6)

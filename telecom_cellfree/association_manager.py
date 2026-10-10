@@ -64,6 +64,8 @@ class UserCentricAssociationManager:
 
         cluster = [primary_ap]
         for ap_idx in order:
+            if len(cluster) >= cluster_size:
+                break
             ap_idx = int(ap_idx)
             if ap_idx == primary_ap:
                 continue

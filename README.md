@@ -101,3 +101,11 @@ This repository ships with four example configs in `Config/`:
 	- `-c1 Config/config_1.json -c2 Config/config_2.json`
 
 
+
+### Reliability and development
+
+See [RELIABILITY.md](RELIABILITY.md) for validated configuration, seed handling,
+checkpoint compatibility, module boundaries, and test commands. The maintained
+[mobility notebook](Notebooks/checkpoint_mobility.ipynb) is tracked without outputs.
+Run `python -m pytest -q` before proposing changes; pull requests also run CPU tests
+in GitHub Actions. Tested direct dependency versions are in `requirements-lock.txt`.

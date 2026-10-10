@@ -75,7 +75,7 @@ class WirelessGraphBuilder:
         
         # Decode actions
         bs_assign = [int(a) // self._n_channel if a is not None else -1 for a in (actions or [-1]*n_ues)]
-        channels = [int(a) % self._n_channel if a is not None else -1 for a in (actions or [-1]*n_ues)]
+        channels = [int(a) % self._n_channel if a is not None and int(a) >= 0 else -1 for a in (actions or [-1]*n_ues)]
         bs_loads = [sum(1 for b in bs_assign if b == i) for i in range(self._n_bs)]
         
         # Build features and edges

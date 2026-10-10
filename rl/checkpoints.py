@@ -2,6 +2,10 @@
 from pathlib import Path
 import os
 import torch
+from functions.reproducibility import source_revision
+from telecom import mobility
+from .networks import resolve_model_spec
+from .observations import observation_schema
 
 
 def bare(model):
@@ -18,9 +22,31 @@ def save_checkpoint(path, agents, scenario, opt, sce, gnn_manager, episode, tota
     options = dict(opt)
     options['dnn_hidden_layers'] = [layer.out_features for layer in bare(agents[0].model_policy).layers[:-1]]
     options['gnn_enabled'] = bool(gnn_manager and gnn_manager.enabled)
+    graph_enabled = bool(gnn_manager and gnn_manager.enabled)
+    input_dim = bare(agents[0].model_policy).input_dim
+    model_spec = resolve_model_spec(options, sce, scenario, input_dim)
     payload = {
-        'format_version': 1, 'purpose': 'policy_evaluation',
+        'format_version': 3, 'purpose': 'policy_evaluation',
+        'source': source_revision(),
+        'architecture': options.get('architecture', 'mlp'),
+        'model_spec': model_spec.to_dict(),
+        'observation_schema': observation_schema(opt, scenario, input_dim, graph=graph_enabled),
         'opt': options, 'sce': dict(sce),
+        'mobility_runtime': {
+            'enabled': bool(options.get('mobility_enabled', False)),
+            'seed': options.get('mobility_seed'),
+            'decisions_per_move': int(options.get('mobility_decisions_per_move', 0) or 0),
+            'ue_speed_metres_per_update': float(mobility.UE_SPEED),
+            'pause_episodes': int(mobility.UE_PAUSE_EPISODES),
+            'constrain_to_coverage': bool(mobility.CONSTRAIN_TO_COVERAGE),
+            'hotspots_enabled': bool(mobility.HOTSPOT_ENABLED),
+            'hotspot_attraction_probability': float(mobility.HOTSPOT_ATTRACTION_PROBABILITY),
+            'hotspot_count_range': list(mobility.HOTSPOT_COUNT_RANGE),
+            'hotspot_radius_range': list(mobility.HOTSPOT_RADIUS_RANGE),
+            'hotspot_weight_range': list(mobility.HOTSPOT_WEIGHT_RANGE),
+            'hotspot_speed': float(mobility.HOTSPOT_SPEED),
+            'hotspot_lifetime_range': list(mobility.HOTSPOT_LIFETIME_RANGE),
+        },
         'shared_networks': bool(agents[0].uses_shared_networks),
         'episode': int(episode), 'total_steps': int(total_steps),
         'policies': [cpu_state(a.model_policy) for a in agents],
@@ -56,8 +82,18 @@ def save_checkpoint(path, agents, scenario, opt, sce, gnn_manager, episode, tota
 def load_checkpoint(path):
     # Only tensors and primitive containers are stored; no arbitrary object loading.
     data = torch.load(path, map_location='cpu', weights_only=True)
-    if data.get('format_version') != 1 or data.get('purpose') != 'policy_evaluation':
+    if data.get('format_version') not in (1, 2, 3) or data.get('purpose') != 'policy_evaluation':
         raise ValueError('Unsupported policy checkpoint format')
+    if data['format_version'] in (2, 3):
+        schema = data.get('observation_schema', {})
+        expected_version = 2 if data['format_version'] == 3 else 1
+        if schema.get('version') != expected_version:
+            raise ValueError('Unsupported observation schema')
+        if data.get('architecture') != data['opt'].get('architecture', 'mlp'):
+            raise ValueError('Checkpoint architecture metadata is inconsistent')
+        model_spec = data.get('model_spec')
+        if model_spec is not None and model_spec['architecture'] != data['architecture']:
+            raise ValueError('Checkpoint model specification is inconsistent')
     n = data['opt']['nagents']
     if len(data['policies']) != n or len(data['ue_positions']) != n:
         raise ValueError('Checkpoint agent count is inconsistent')

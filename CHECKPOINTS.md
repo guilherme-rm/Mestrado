@@ -78,3 +78,11 @@ new allocations with the same frozen policies. That option is not implemented he
 
 Previously completed runs that did not save model weights cannot be loaded using
 this feature; their CSV results are not sufficient to reconstruct a trained policy.
+
+## Versioned metadata
+
+New snapshots use format 2 and include the architecture, observation schema and
+input dimension, and source revision. The loader also accepts existing format 1
+snapshots. The CLI remains a static evaluator; the tracked
+`Notebooks/checkpoint_mobility.ipynb` provides movement evaluation through shared
+interaction helpers. See [RELIABILITY.md](RELIABILITY.md) for compatibility details.

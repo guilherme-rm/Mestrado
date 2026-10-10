@@ -21,6 +21,7 @@ env/
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
+!Notebooks/checkpoint_mobility.ipynb
 test.ipynb
 
 # Test configs
@@ -69,3 +70,5 @@ scripts/
 docs/
 
 Thesis/
+# Local experiment console output
+*.log

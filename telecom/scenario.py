@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy import pi
+import random as random_module
 from random import random, uniform, choice
 from typing import List, Tuple
 
@@ -57,7 +58,8 @@ class ScenarioConfig:
 class Scenario:
     """Defines the network scenario (layout + base stations)."""
 
-    def __init__(self, sce):
+    def __init__(self, sce, seed=None):
+        self.rng = random_module.Random(seed) if seed is not None else random_module
         self.sce = sce
         self._base_stations = self._init_base_stations()
 
@@ -69,7 +71,9 @@ class Scenario:
         return self.sce.nMBS + self.sce.nPBS + self.sce.nFBS
 
     def BS_Location(self):  # noqa: N802 (legacy name)
-        return self._bs_location()
+        return tuple(np.array([bs.get_location() for bs in self._base_stations
+                               if bs.bs_type == kind], dtype=float).reshape(-1, 2)
+                     for kind in ("MBS", "PBS", "FBS"))
 
     def reset(self):
         for bs in self._base_stations:
@@ -90,9 +94,9 @@ class Scenario:
             loc_pbs[i, 1] = loc_mbs[int(i / 4), 1] + 250 * np.sin(pi / 2 * (i % 4))
 
         for i in range(self.sce.nFBS):
-            locm = choice(loc_mbs)
-            r = self.sce.rMBS * random()
-            theta = uniform(-pi, pi)
+            locm = self.rng.choice(loc_mbs)
+            r = self.sce.rMBS * self.rng.random()
+            theta = self.rng.uniform(-pi, pi)
             loc_fbs[i, 0] = locm[0] + r * np.cos(theta)
             loc_fbs[i, 1] = locm[1] + r * np.sin(theta)
 

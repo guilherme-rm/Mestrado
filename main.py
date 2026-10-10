@@ -4,6 +4,7 @@ import argparse
 import copy
 import json
 import random
+import signal
 import subprocess
 import sys
 
@@ -12,6 +13,7 @@ import torch
 
 from dotdic import DotDic
 from functions.runtime_settings import apply_runtime_settings
+from functions.reproducibility import resolve_seeds
 from telecom.environment_factory import resolve_environment_type
 from telecom import mobility
 
@@ -20,6 +22,9 @@ def run_multiple_trials(opt, sce, ntrials: int, run_name: str = None):
     """Run multiple independent trials."""
     from functions.main_classes import ExperimentManager
 
+    if ntrials < 1:
+        raise ValueError("ntrials must be positive")
+    resolve_seeds(opt)
     all_metrics = []
     
     for i in range(ntrials):
@@ -30,6 +35,10 @@ def run_multiple_trials(opt, sce, ntrials: int, run_name: str = None):
         # Deep copy to ensure independent trials
         trial_opt = copy.deepcopy(opt)
         trial_sce = copy.deepcopy(sce)
+        trial_opt.seed = (opt.seed + i) % (2**32)
+        if i:
+            trial_opt.layout_seed = None
+            trial_opt.mobility_seed = None
         
         # Determine run name for this trial
         if run_name:
@@ -98,6 +107,10 @@ def main():
     parser.add_argument("--eval-episodes", type=int, default=1)
     parser.add_argument("--eval-steps", type=int, default=None)
     parser.add_argument("--eval-device", default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--eval-mobility", action="store_true", default=None,
+                        help="Evaluate with mobility (enabled automatically for mobility checkpoints)")
+    parser.add_argument("--eval-mobility-seed", type=int, default=None,
+                        help="Override the checkpoint mobility seed")
     parser.add_argument("--checkpoint-interval", type=int, default=None,
                         help="Save a policy snapshot every N completed episodes (0 disables periodic saves)")
     parser.add_argument("--no-final-checkpoint", action="store_true",
@@ -110,7 +123,8 @@ def main():
         from rl.evaluation import evaluate_checkpoint
         output = args.run_name or "Result/eval_" + datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         evaluate_checkpoint(args.evaluate, output, args.eval_episodes, args.eval_steps,
-                            args.eval_device, args.seed if args.seed is not None else 42)
+                            args.eval_device, args.seed if args.seed is not None else 42,
+                            mobility=args.eval_mobility, mobility_seed=args.eval_mobility_seed)
         return 0
     if not args.ui and (not args.config_sce or not args.config_opt):
         parser.error("Training requires -c1 and -c2")
@@ -172,6 +186,7 @@ def main():
     # Command-line seed overrides config seed
     seed = args.seed if args.seed is not None else getattr(opt, "seed", None)
     if seed is not None:
+        opt.seed = seed
         random.seed(seed)
         np.random.seed(seed)
         torch.manual_seed(seed)
@@ -230,7 +245,14 @@ def main():
     print(f"-----------------------------\n")
     
     # Run training
-    all_metrics = run_multiple_trials(opt, sce, args.ntrials, run_name=args.run_name)
+    def interrupt_training(signum, frame):
+        raise KeyboardInterrupt("Training interrupted by SIGTERM")
+
+    previous_handler = signal.signal(signal.SIGTERM, interrupt_training)
+    try:
+        all_metrics = run_multiple_trials(opt, sce, args.ntrials, run_name=args.run_name)
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
     
     print(f"\n{'='*60}")
     print(f"All {args.ntrials} trial(s) completed successfully!")
